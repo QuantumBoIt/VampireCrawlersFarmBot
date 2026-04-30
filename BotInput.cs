@@ -191,28 +191,44 @@ namespace VampireCrawlersFarmBot
 
         private const string MovementRootPath =
             "CardGame/Player/Canvas/ShakeContainer/DungeonMovement/3DDungeonMovement";
+        private const string MovementButtonsPath = MovementRootPath + "/Holder/MovementArrows(ugly)";
 
-        // Try name-hint UI button first; fall back to keyboard.
-        internal bool MoveForward()   => TryClickMovementButton(new[] { "forward", "move", "up", "north", "front" },
-                                             BotConfig.ParseKey(BotConfig.Instance.MoveForward.Value), "MoveForward");
-        internal bool MoveBack()      => TryClickMovementButton(new[] { "back", "backward", "south", "rear" },
-                                             BotConfig.ParseKey(BotConfig.Instance.MoveBack.Value), "MoveBack");
-        internal bool TurnLeft()      => TryClickMovementButton(new[] { "left", "turnleft", "west", "rotateleft" },
-                                             BotConfig.ParseKey(BotConfig.Instance.TurnLeft.Value), "TurnLeft");
-        internal bool TurnRight()     => TryClickMovementButton(new[] { "right", "turnright", "east", "rotateright" },
-                                             BotConfig.ParseKey(BotConfig.Instance.TurnRight.Value), "TurnRight");
+        internal bool MoveForward() => TryClickMovementButton(
+            new[] { "Movement_Move_Forward" },
+            new[] { "move_forward", "forward" },
+            BotConfig.ParseKey(BotConfig.Instance.MoveForward.Value),
+            "MoveForward");
+
+        internal bool MoveBack() => TryClickMovementButton(
+            new[] { "Movement_Move_Backward (yuk)" },
+            new[] { "move_backward", "backward" },
+            BotConfig.ParseKey(BotConfig.Instance.MoveBack.Value),
+            "MoveBack");
+
+        internal bool TurnLeft() => TryClickMovementButton(
+            new[] { "Movement_Turn_Left" },
+            new[] { "turn_left", "turnleft" },
+            BotConfig.ParseKey(BotConfig.Instance.TurnLeft.Value),
+            "TurnLeft");
+
+        internal bool TurnRight() => TryClickMovementButton(
+            new[] { "Movement_Turn_Right" },
+            new[] { "turn_right", "turnright" },
+            BotConfig.ParseKey(BotConfig.Instance.TurnRight.Value),
+            "TurnRight");
+
         internal void PressInteract() => TapKey(BotConfig.ParseKey(BotConfig.Instance.Interact.Value));
         internal void PressEscape()   => TapKey(BotConfig.ParseKey(BotConfig.Instance.OpenMenu.Value));
 
-        // Searches all active interactable Buttons under MovementRootPath for one
-        // whose name (lowered) contains any of the hints, then clicks it.
+        // Prefer confirmed button names from F11 dumps. Keyword fallback is strict
+        // because every movement button starts with "Movement_".
         // Returns true if a button was found and clicked; false otherwise (uses key fallback).
-        private bool TryClickMovementButton(string[] hints, Key fallbackKey, string label)
+        private bool TryClickMovementButton(string[] exactNames, string[] hints, Key fallbackKey, string label)
         {
-            var root = GameObject.Find(MovementRootPath);
+            var root = GameObject.Find(MovementButtonsPath) ?? GameObject.Find(MovementRootPath);
             if (root != null)
             {
-                var btn = FindButtonByHint(root.transform, hints);
+                var btn = FindButtonByExactName(root.transform, exactNames) ?? FindButtonByHint(root.transform, hints);
                 if (btn != null)
                 {
                     BotLogger.Info($"MovBtn: {label} → \"{btn.gameObject.name}\"");
@@ -227,6 +243,22 @@ namespace VampireCrawlersFarmBot
             }
             TapKey(fallbackKey);
             return false;
+        }
+
+        private static Button FindButtonByExactName(Transform parent, string[] names)
+        {
+            var btn = parent.GetComponent<Button>();
+            if (btn != null && btn.interactable && btn.gameObject.activeInHierarchy)
+            {
+                foreach (var n in names)
+                    if (parent.name == n) return btn;
+            }
+            for (int i = 0; i < parent.childCount; i++)
+            {
+                var found = FindButtonByExactName(parent.GetChild(i), names);
+                if (found != null) return found;
+            }
+            return null;
         }
 
         private static Button FindButtonByHint(Transform parent, string[] hints)

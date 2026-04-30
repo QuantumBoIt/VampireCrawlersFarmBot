@@ -4,6 +4,13 @@ using UnityEngine.InputSystem;
 
 namespace VampireCrawlersFarmBot
 {
+    internal enum LocalScanPhase
+    {
+        ReadyToProbe,
+        WaitingForProbeResult,
+        BackingOut
+    }
+
     internal sealed class FarmBotRunner : MonoBehaviour
     {
         private bool _enabled;
@@ -36,6 +43,13 @@ namespace VampireCrawlersFarmBot
         private bool _exploreMoved;        // true after MoveForward pressed, awaiting result
         private Vector2 _explorePreMovePos; // minimap player pos before last MoveForward
         private int _wallTurnCount;        // consecutive turns taken after wall hits; 4 = fully stuck
+        private bool _navMovePending;
+        private GridPos _navMoveFrom;
+        private GridPos _navMoveTo;
+        private int _localScanAttempts;
+        private LocalScanPhase _localScanPhase;
+        private GridPos _localScanOrigin;
+        private CardinalDir _localScanProbeDir;
 
         // How close (world units) the player must be to interact with a target.
         // Approximate; depends on the game's tile size. Calibrate after a dump.
@@ -118,6 +132,7 @@ namespace VampireCrawlersFarmBot
                 BotLogger.Info($"F11 Step: current state = {_sm.CurrentState}");
                 if (_game.IsInDungeon())
                 {
+                    _map.DumpMinimapNavigationSnapshot();
                     _map.DumpMinimapHierarchy();
                     _ui.DumpDungeonMovementButtons();
                     _ui.DumpNukeHierarchy();
@@ -144,6 +159,9 @@ namespace VampireCrawlersFarmBot
                 BotLogger.Debug($"Tick: entering state {state}");
                 _lastTickedState = state;
                 _triedSubmit = false;
+                _navMovePending = false;
+                _localScanAttempts = 0;
+                _localScanPhase = LocalScanPhase.ReadyToProbe;
                 if (state == FarmState.UseNuke)
                 {
                     _nukeClickTime = 0f;
@@ -334,21 +352,15 @@ namespace VampireCrawlersFarmBot
 
         private void CompleteSingleRunAfterNuke(string reason)
         {
-            _enabled = false;
-            _sm.TransitionTo(FarmState.Disabled, reason);
-            BotLogger.Info("FarmBot single-run target complete: nuke detonated; bot disabled.");
+            _sm.TransitionTo(FarmState.ResolveLevelUps, reason);
+            BotLogger.Info("FarmBot nuke detonated; continuing to level-up resolution and dungeon cleanup.");
         }
 
-        // Handle level-up card choice modal. Stays in this state until the modal
-        // disappears, clicking the first available card each time it appears.
+        // Handle level-up card choice modal. Click only confirmed non-gem cards.
+        // Gem/uncertain choices wait for manual input; Skip is never used here.
         // After all level-ups are resolved, re-scans the map before resuming.
         private void TickResolveLevelUps(float timeout)
         {
-            if (_sm.TimedOut(timeout))
-            {
-                _sm.TransitionTo(FarmState.ReadMap, "ResolveLevelUps timed out, proceeding");
-                return;
-            }
             if (!WaitDone()) return;
 
             if (!_game.IsChooseCardModalVisible())
@@ -356,12 +368,17 @@ namespace VampireCrawlersFarmBot
                 _sm.TransitionTo(FarmState.ReadMap, "no more level-up modals");
                 return;
             }
-            var btn = _game.GetFirstLevelUpCardButton();
-            if (btn == null) { LogPeriodic("ResolveLevelUps: waiting for card buttons..."); return; }
 
-            _input.ClickButton(btn, "LevelUpCard");
-            SetWait(BotConfig.Instance.UiWaitMs.Value * 2);
-            // Stay in ResolveLevelUps to handle chains of level-ups.
+            var safeBtn = _game.GetSafeLevelUpCardButton();
+            if (safeBtn != null)
+            {
+                _input.ClickButton(safeBtn, "LevelUpCard(safe-non-gem)");
+                SetWait(BotConfig.Instance.UiWaitMs.Value * 2);
+                return;
+            }
+
+            LogPeriodic("ResolveLevelUps: no confirmed safe non-gem card; waiting for manual card choice...");
+            SetWait(BotConfig.Instance.UiWaitMs.Value);
         }
 
         // Start grid exploration. Chests are not pre-scannable in a Doom-style dungeon
@@ -377,7 +394,19 @@ namespace VampireCrawlersFarmBot
             _exploreMoved = false;
             _explorePreMovePos = Vector2.zero;
             _wallTurnCount = 0;
-            _sm.TransitionTo(FarmState.ExploreGrid, "starting grid exploration");
+
+            var snapshot = _map.ReadMinimapSnapshot();
+            if (snapshot.IsValid)
+            {
+                _nav.LoadMinimap(snapshot);
+                if (_nav.HasUnvisitedChests())
+                    _sm.TransitionTo(FarmState.SelectNextChest, "minimap chests found");
+                else
+                    _sm.TransitionTo(FarmState.NavigateToExit, "no minimap chests found");
+                return;
+            }
+
+            _sm.TransitionTo(FarmState.ExploreGrid, "minimap unavailable, falling back to exploration");
         }
 
         // ── Phase 3b: Grid exploration ───────────────────────────────────────────
@@ -500,20 +529,24 @@ namespace VampireCrawlersFarmBot
             if (_sm.TimedOut(timeout)) { _recovery.EnterRecovery("SelectNextChest timed out"); return; }
             if (!WaitDone()) return;
 
+            var snapshot = _map.ReadMinimapSnapshot();
+            if (snapshot.IsValid)
+                _nav.LoadMinimap(snapshot);
+
             if (!_nav.HasUnvisitedChests())
             {
                 _sm.TransitionTo(FarmState.NavigateToExit, "all chests done");
                 return;
             }
-            var playerT = _game.GetPlayerTransform();
-            var playerPos = playerT != null ? playerT.position : Vector3.zero;
-            _navTarget = _nav.GetNextChest(playerPos);
+            _navTarget = snapshot.IsValid
+                ? _nav.GetNextChest(snapshot.Player)
+                : _nav.GetNextChest(Vector3.zero);
             if (_navTarget == null)
             {
                 _sm.TransitionTo(FarmState.NavigateToExit, "no reachable chests left");
                 return;
             }
-            BotLogger.Info($"SelectNextChest: targeting {_navTarget.Label} at {_navTarget.WorldPos}");
+            BotLogger.Info($"SelectNextChest: targeting {_navTarget.Label} at grid {_navTarget.Pos}");
             _sm.TransitionTo(FarmState.NavigateToChest, $"chest selected: {_navTarget.Label}");
         }
 
@@ -541,21 +574,28 @@ namespace VampireCrawlersFarmBot
                 return;
             }
 
-            var playerT = _game.GetPlayerTransform();
-            if (playerT == null) { LogPeriodic("NavigateToChest: player not found"); return; }
             if (_navTarget == null) { _sm.TransitionTo(FarmState.SelectNextChest, "no target"); return; }
 
-            float dist = Vector3.Distance(playerT.position, _navTarget.WorldPos);
-            if (dist < ArrivalDistance)
+            var snapshot = _map.ReadMinimapSnapshot();
+            if (!snapshot.IsValid)
             {
-                _sm.TransitionTo(FarmState.LocalScanChest, $"arrived (dist={dist:F1})");
+                LogPeriodic("NavigateToChest: minimap snapshot unavailable");
+                return;
+            }
+            _nav.LoadMinimap(snapshot);
+
+            if (snapshot.Player.Equals(_navTarget.Pos))
+            {
+                _sm.TransitionTo(FarmState.LocalScanChest, $"arrived at chest grid {_navTarget.Pos}");
                 return;
             }
 
-            StepToward(playerT, _navTarget.WorldPos);
+            NavigateOneGridStep(snapshot, _navTarget.Pos, "NavigateToChest");
         }
 
-        // Press Interact near the chest and wait for the MenuCanvas to open.
+        // Chests sit on one of the four boundaries of the current minimap cell.
+        // Probe each boundary with MoveForward. If it leads to another cell, move
+        // back immediately and try the next direction.
         private void TickLocalScanChest(float timeout)
         {
             if (_sm.TimedOut(timeout))
@@ -571,17 +611,71 @@ namespace VampireCrawlersFarmBot
                 _sm.TransitionTo(FarmState.OpenChest, "chest menu open");
                 return;
             }
-            if (!_triedSubmit)
+
+            var snapshot = _map.ReadMinimapSnapshot();
+            if (!snapshot.IsValid)
             {
-                _triedSubmit = true;
-                _input.PressInteract();
-                BotLogger.Info("LocalScanChest: pressed Interact");
-                SetWait(BotConfig.Instance.UiWaitMs.Value);
+                LogPeriodic("LocalScanChest: minimap snapshot unavailable");
+                return;
             }
-            else
+
+            if (_localScanAttempts >= 4)
             {
-                LogPeriodic("LocalScanChest: waiting for chest menu...");
+                if (_navTarget != null) _nav.MarkChestUnreachable(_navTarget);
+                _sm.TransitionTo(FarmState.SelectNextChest, "chest boundary scan failed");
+                return;
             }
+
+            if (_localScanPhase == LocalScanPhase.WaitingForProbeResult)
+            {
+                if (_game.GetChestDoneButton() != null || _game.GetChestOpenButton() != null)
+                {
+                    _sm.TransitionTo(FarmState.OpenChest, $"chest triggered by probing {_localScanProbeDir}");
+                    return;
+                }
+
+                if (_navTarget != null && !SnapshotHasChestAt(snapshot, _navTarget.Pos))
+                {
+                    BotLogger.Info($"LocalScanChest: target marker {_navTarget.Pos} disappeared after probing {_localScanProbeDir}; waiting for chest/cashout UI");
+                    _sm.TransitionTo(FarmState.OpenChest, "chest marker disappeared after probe");
+                    return;
+                }
+
+                if (!snapshot.Player.Equals(_localScanOrigin))
+                {
+                    BotLogger.Info($"LocalScanChest: {_localScanProbeDir} leads to cell {snapshot.Player}; moving back to {_localScanOrigin}");
+                    _input.MoveBack();
+                    _localScanPhase = LocalScanPhase.BackingOut;
+                    SetWait(BotConfig.Instance.MoveWaitMs.Value);
+                    return;
+                }
+
+                BotLogger.Info($"LocalScanChest: {_localScanProbeDir} did not open chest and did not leave cell");
+                AdvanceLocalScanDirection("LocalScanChest");
+                return;
+            }
+
+            if (_localScanPhase == LocalScanPhase.BackingOut)
+            {
+                if (!snapshot.Player.Equals(_localScanOrigin))
+                    BotLogger.Warn($"LocalScanChest: backout expected {_localScanOrigin}, still at {snapshot.Player}");
+                AdvanceLocalScanDirection("LocalScanChest");
+                return;
+            }
+
+            _localScanOrigin = snapshot.Player;
+            var player = _game.GetPlayerTransform();
+            if (player == null)
+            {
+                LogPeriodic("LocalScanChest: DungeonPlayer not found");
+                return;
+            }
+
+            _localScanProbeDir = Navigator.GetFacing(player);
+            BotLogger.Info($"LocalScanChest: boundary forward probe #{_localScanAttempts + 1}/4, origin={_localScanOrigin}, facing={_localScanProbeDir}");
+            _input.MoveForward();
+            _localScanPhase = LocalScanPhase.WaitingForProbeResult;
+            SetWait(Math.Max(BotConfig.Instance.MoveWaitMs.Value, BotConfig.Instance.UiWaitMs.Value));
         }
 
         // Choose cash-out or open based on policy; transition to CashOutChest.
@@ -599,7 +693,7 @@ namespace VampireCrawlersFarmBot
 
             if (doneBtn == null && openBtn == null)
             {
-                LogPeriodic("OpenChest: waiting for chest buttons...");
+                LogPeriodic("OpenChest: waiting for chest cash-out/open buttons...");
                 return;
             }
 
@@ -640,23 +734,20 @@ namespace VampireCrawlersFarmBot
         {
             if (_navTarget != null)
             {
-                _navTarget.Done = true;
+                _nav.MarkChestDone(_navTarget);
                 BotLogger.Info($"MarkChestDone: {_navTarget.Label} done");
                 _navTarget = null;
             }
-            // Return to exploration so the bot continues visiting other rooms.
-            // _exploreInteracted stays true so exploration skips re-interacting in the
-            // just-handled chest room and moves straight to the next room.
+
             _exploreInteracted = true;
             _exploreMoved = false;
-            _sm.TransitionTo(FarmState.ExploreGrid, "chest done, continuing exploration");
+            _sm.TransitionTo(FarmState.SelectNextChest, "chest done, selecting next minimap target");
         }
 
         // ── Phase 5: Exit dungeon ─────────────────────────────────────────────
 
-        // Navigate toward the dungeon exit.
-        // TODO: find exit transform path from F10 dump; for now uses Escape key
-        // to open the exit menu directly (may or may not work for this game).
+        // Navigate toward the minimap exit marker. Do not use Escape here: that
+        // opens the abandon-run menu and skips the level-completion reward.
         private void TickNavigateToExit(float timeout)
         {
             if (_sm.TimedOut(timeout)) { _recovery.EnterRecovery("NavigateToExit timed out"); return; }
@@ -668,26 +759,29 @@ namespace VampireCrawlersFarmBot
                 return;
             }
 
-            if (_game.IsExitMenuVisible())
+            var snapshot = _map.ReadMinimapSnapshot();
+            if (snapshot.IsValid)
             {
-                _sm.TransitionTo(FarmState.LocalScanExit, "exit menu already visible");
-                return;
+                _nav.LoadMinimap(snapshot);
+                if (_nav.CurrentMap.Exit != null)
+                {
+                    if (snapshot.Player.Equals(_nav.CurrentMap.Exit.Pos))
+                    {
+                        _sm.TransitionTo(FarmState.LocalScanExit, $"arrived at exit grid {_nav.CurrentMap.Exit.Pos}");
+                        return;
+                    }
+                    NavigateOneGridStep(snapshot, _nav.CurrentMap.Exit.Pos, "NavigateToExit");
+                    return;
+                }
             }
 
-            if (!_triedSubmit)
-            {
-                _triedSubmit = true;
-                BotLogger.Info("NavigateToExit: pressing Escape to open exit menu");
-                _input.PressEscape();
-                SetWait(BotConfig.Instance.UiWaitMs.Value * 2);
-            }
-            else
-            {
-                LogPeriodic("NavigateToExit: waiting for exit menu...");
-            }
+            LogPeriodic("NavigateToExit: waiting for minimap exit marker; not pressing Escape because that abandons the run.");
+            SetWait(BotConfig.Instance.UiWaitMs.Value);
         }
 
-        // Wait for the ExitToVillageButton to become visible.
+        // Like chests, the exit trigger may be on a cell boundary. Probe each
+        // boundary with MoveForward; if it enters a neighboring cell, back out
+        // and try the next direction.
         private void TickLocalScanExit(float timeout)
         {
             if (_sm.TimedOut(timeout)) { _recovery.EnterRecovery("LocalScanExit timed out"); return; }
@@ -698,17 +792,64 @@ namespace VampireCrawlersFarmBot
                 _sm.TransitionTo(FarmState.EnterExit, "ExitToVillageButton visible");
                 return;
             }
-            if (!_triedSubmit)
+
+            if (_localScanAttempts >= 4)
             {
-                _triedSubmit = true;
-                _input.PressInteract();
-                BotLogger.Info("LocalScanExit: pressed Interact");
+                _recovery.EnterRecovery("LocalScanExit boundary scan failed; refusing Escape abandon fallback");
+                return;
+            }
+
+            var snapshot = _map.ReadMinimapSnapshot();
+            if (!snapshot.IsValid)
+            {
+                LogPeriodic("LocalScanExit: minimap snapshot unavailable");
                 SetWait(BotConfig.Instance.UiWaitMs.Value);
+                return;
             }
-            else
+
+            if (_localScanPhase == LocalScanPhase.WaitingForProbeResult)
             {
-                LogPeriodic("LocalScanExit: waiting for ExitToVillageButton...");
+                if (_game.IsExitMenuVisible())
+                {
+                    _sm.TransitionTo(FarmState.EnterExit, $"exit triggered by probing {_localScanProbeDir}");
+                    return;
+                }
+
+                if (!snapshot.Player.Equals(_localScanOrigin))
+                {
+                    BotLogger.Info($"LocalScanExit: {_localScanProbeDir} leads to cell {snapshot.Player}; moving back to {_localScanOrigin}");
+                    _input.MoveBack();
+                    _localScanPhase = LocalScanPhase.BackingOut;
+                    SetWait(BotConfig.Instance.MoveWaitMs.Value);
+                    return;
+                }
+
+                BotLogger.Info($"LocalScanExit: {_localScanProbeDir} did not open exit and did not leave cell");
+                AdvanceLocalScanDirection("LocalScanExit");
+                return;
             }
+
+            if (_localScanPhase == LocalScanPhase.BackingOut)
+            {
+                if (!snapshot.Player.Equals(_localScanOrigin))
+                    BotLogger.Warn($"LocalScanExit: backout expected {_localScanOrigin}, still at {snapshot.Player}");
+                AdvanceLocalScanDirection("LocalScanExit");
+                return;
+            }
+
+            _localScanOrigin = snapshot.Player;
+            var player = _game.GetPlayerTransform();
+            if (player == null)
+            {
+                LogPeriodic("LocalScanExit: DungeonPlayer not found");
+                return;
+            }
+
+            _localScanProbeDir = Navigator.GetFacing(player);
+            BotLogger.Info($"LocalScanExit: boundary forward probe #{_localScanAttempts + 1}/4, origin={_localScanOrigin}, facing={_localScanProbeDir}");
+            _input.MoveForward();
+            _localScanPhase = LocalScanPhase.WaitingForProbeResult;
+            SetWait(Math.Max(BotConfig.Instance.MoveWaitMs.Value, BotConfig.Instance.UiWaitMs.Value));
         }
 
         // Click ExitToVillageButton.
@@ -818,6 +959,70 @@ namespace VampireCrawlersFarmBot
 
         // ── Navigation helper ────────────────────────────────────────────────
 
+        private bool NavigateOneGridStep(MapSnapshot snapshot, GridPos target, string label)
+        {
+            var cfg = BotConfig.Instance;
+
+            if (_navMovePending)
+            {
+                if (snapshot.Player.Equals(_navMoveTo))
+                {
+                    BotLogger.Info($"{label}: move confirmed {_navMoveFrom} -> {_navMoveTo}");
+                }
+                else if (snapshot.Player.Equals(_navMoveFrom))
+                {
+                    BotLogger.Info($"{label}: blocked moving {_navMoveFrom} -> {_navMoveTo}");
+                    _nav.MarkEdgeBlocked(_navMoveFrom, _navMoveTo);
+                }
+                else
+                {
+                    BotLogger.Info($"{label}: moved unexpectedly {_navMoveFrom} -> {snapshot.Player}, expected {_navMoveTo}");
+                }
+                _navMovePending = false;
+                return false;
+            }
+
+            var path = _nav.PlanPath(snapshot.Player, target);
+            if (path.Count == 0)
+            {
+                BotLogger.Warn($"{label}: no grid path from {snapshot.Player} to {target}");
+                return false;
+            }
+
+            var next = path[0];
+            var needed = Navigator.DirectionTo(snapshot.Player, next);
+            var playerT = _game.GetPlayerTransform();
+            if (playerT == null)
+            {
+                LogPeriodic($"{label}: DungeonPlayer not found");
+                return false;
+            }
+
+            var facing = Navigator.GetFacing(playerT);
+            int turns = Navigator.TurnsRight(facing, needed);
+            BotLogger.Info($"{label}: player={snapshot.Player}, target={target}, next={next}, facing={facing}, needed={needed}, turns={turns}");
+
+            if (turns == 0)
+            {
+                _input.MoveForward();
+                _navMovePending = true;
+                _navMoveFrom = snapshot.Player;
+                _navMoveTo = next;
+                SetWait(cfg.MoveWaitMs.Value);
+            }
+            else if (turns > 0)
+            {
+                _input.TurnRight();
+                SetWait(cfg.TurnWaitMs.Value);
+            }
+            else
+            {
+                _input.TurnLeft();
+                SetWait(cfg.TurnWaitMs.Value);
+            }
+            return true;
+        }
+
         // Execute one movement step (turn or move) toward 'targetWorldPos'.
         private void StepToward(Transform player, Vector3 targetWorldPos)
         {
@@ -848,11 +1053,40 @@ namespace VampireCrawlersFarmBot
         private bool WaitDone() => Time.realtimeSinceStartup >= _waitUntil;
         private void SetWait(int ms) => _waitUntil = Time.realtimeSinceStartup + ms / 1000f;
 
+        private string GetCurrentFacingLabel()
+        {
+            var player = _game.GetPlayerTransform();
+            return player == null ? "unknown" : Navigator.GetFacing(player).ToString();
+        }
+
+        private static bool SnapshotHasChestAt(MapSnapshot snapshot, GridPos pos)
+        {
+            foreach (var chest in snapshot.Chests)
+                if (chest.Pos.Equals(pos)) return true;
+            return false;
+        }
+
+        private void AdvanceLocalScanDirection(string label)
+        {
+            _localScanAttempts++;
+            if (_localScanAttempts >= 4)
+            {
+                _localScanPhase = LocalScanPhase.ReadyToProbe;
+                return;
+            }
+
+            _input.TurnRight();
+            _localScanPhase = LocalScanPhase.ReadyToProbe;
+            BotLogger.Info($"{label}: turning right to probe next boundary ({_localScanAttempts}/4)");
+            SetWait(BotConfig.Instance.TurnWaitMs.Value);
+        }
+
         private void LogPeriodic(string msg)
         {
             if (Time.realtimeSinceStartup - _lastLogTime < 2f) return;
             _lastLogTime = Time.realtimeSinceStartup;
             BotLogger.Info(msg);
         }
+
     }
 }

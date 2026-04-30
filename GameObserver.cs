@@ -1,12 +1,24 @@
 using UnityEngine;
 using UnityEngine.SceneManagement;
 using UnityEngine.UI;
+using System;
 using System.Collections.Generic;
+using System.Reflection;
+using System.Text;
 
 namespace VampireCrawlersFarmBot
 {
     internal sealed class GameObserver
     {
+        internal sealed class LevelUpOptionInfo
+        {
+            internal Button Button;
+            internal string Label;
+            internal bool IsGem;
+            internal bool IsSafeCard;
+            internal string Reason;
+        }
+
         // Scene names confirmed from F9 dumps
         private const string SceneVillage = "SC_TownMap";
         private const string SceneDungeon = "SC_Game";
@@ -93,12 +105,223 @@ namespace VampireCrawlersFarmBot
             return null;
         }
 
+        internal Button GetSafeLevelUpCardButton()
+        {
+            var options = GetLevelUpOptions();
+            foreach (var option in options)
+            {
+                BotLogger.Info($"LevelUpOption: {option.Label} safe={option.IsSafeCard} gem={option.IsGem} reason={option.Reason}");
+                if (option.IsSafeCard && option.Button != null && option.Button.interactable)
+                    return option.Button;
+            }
+            return null;
+        }
+
+        internal List<LevelUpOptionInfo> GetLevelUpOptions()
+        {
+            var result = new List<LevelUpOptionInfo>();
+            var container = GameObject.Find(PathChooseCardContainer);
+            if (container == null) return result;
+
+            for (int i = 0; i < container.transform.childCount; i++)
+            {
+                var child = container.transform.GetChild(i);
+                if (!child.gameObject.activeInHierarchy) continue;
+
+                var option = AnalyzeLevelUpOption(child);
+                option.Label = $"{i}:{BuildPath(child)}";
+                result.Add(option);
+            }
+            return result;
+        }
+
+        private static LevelUpOptionInfo AnalyzeLevelUpOption(Transform root)
+        {
+            var option = new LevelUpOptionInfo
+            {
+                Button = root.GetComponentInChildren<Button>(),
+                IsGem = false,
+                IsSafeCard = false,
+                Reason = "unknown"
+            };
+
+            bool hasCardView = false;
+            bool hasNormalCardName = false;
+            var evidence = new StringBuilder();
+            AnalyzeLevelUpTree(root, ref hasCardView, ref hasNormalCardName, option, evidence, 0);
+
+            if (option.IsGem)
+            {
+                option.IsSafeCard = false;
+                option.Reason = evidence.Length > 0 ? evidence.ToString() : "gem evidence";
+            }
+            else if (hasCardView || hasNormalCardName)
+            {
+                option.IsSafeCard = true;
+                option.Reason = evidence.Length > 0 ? evidence.ToString() : "card visual/model without gem evidence";
+            }
+            else
+            {
+                option.Reason = evidence.Length > 0 ? evidence.ToString() : "no card model evidence";
+            }
+
+            return option;
+        }
+
+        private static void AnalyzeLevelUpTree(
+            Transform t,
+            ref bool hasCardView,
+            ref bool hasNormalCardName,
+            LevelUpOptionInfo option,
+            StringBuilder evidence,
+            int depth)
+        {
+            if (t == null || depth > 12) return;
+
+            var go = t.gameObject;
+            var lowerName = go.name.ToLowerInvariant();
+            if (lowerName.Contains("animatedgemview") || lowerName.Contains("gemview") ||
+                lowerName.Contains("gemcard") || lowerName == "card_pickup")
+            {
+                option.IsGem = true;
+                AppendEvidence(evidence, $"name={go.name}");
+            }
+
+            if (go.name.StartsWith("Card_", StringComparison.Ordinal) && lowerName != "card_pickup" &&
+                !lowerName.Contains("rewardchest"))
+            {
+                hasNormalCardName = true;
+                AppendEvidence(evidence, $"cardGO={go.name}");
+            }
+
+            foreach (var c in go.GetComponents<Component>())
+            {
+                if (c == null) continue;
+                var typeName = SafeTypeName(c);
+                var lowerType = typeName.ToLowerInvariant();
+                if (lowerType == "cardview")
+                {
+                    hasCardView = true;
+                    AppendEvidence(evidence, $"component={typeName}");
+                    AnalyzeCardViewModel(c, option, evidence);
+                }
+                else if (lowerType.Contains("animatedgemview") || lowerType.Contains("gemreward") ||
+                         lowerType.Contains("gemcard") || lowerType.Contains("jewel") ||
+                         lowerType.Contains("socket"))
+                {
+                    option.IsGem = true;
+                    AppendEvidence(evidence, $"component={typeName}");
+                }
+            }
+
+            for (int i = 0; i < t.childCount; i++)
+                AnalyzeLevelUpTree(t.GetChild(i), ref hasCardView, ref hasNormalCardName, option, evidence, depth + 1);
+        }
+
+        private static void AnalyzeCardViewModel(Component cardView, LevelUpOptionInfo option, StringBuilder evidence)
+        {
+            var flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
+            object model = TryGetMember(cardView, "CardModel", flags) ?? TryGetMember(cardView, "_cardModel", flags);
+            if (model == null) return;
+
+            AppendEvidence(evidence, $"model={SafeTypeName(model)}");
+            AnalyzeModelObject(model, option, evidence, 0);
+
+            object config = TryGetMember(model, "CardConfig", flags) ??
+                            TryGetMember(model, "BaseCardConfig", flags) ??
+                            TryGetMember(model, "_cardConfig", flags);
+            if (config != null)
+            {
+                AppendEvidence(evidence, $"config={SafeTypeName(config)}");
+                AnalyzeModelObject(config, option, evidence, 0);
+            }
+        }
+
+        private static void AnalyzeModelObject(object obj, LevelUpOptionInfo option, StringBuilder evidence, int depth)
+        {
+            if (obj == null || depth > 1) return;
+
+            var typeName = SafeTypeName(obj);
+            if (LooksLikeGemText(typeName))
+            {
+                option.IsGem = true;
+                AppendEvidence(evidence, $"gemType={typeName}");
+            }
+
+            var flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
+            foreach (var name in new[] { "Name", "DisplayName", "Id", "ID", "Key", "LocalizationKey", "_name", "_id" })
+            {
+                var value = TryGetMember(obj, name, flags);
+                if (value == null) continue;
+                var text = value.ToString();
+                if (string.IsNullOrEmpty(text)) continue;
+                AppendEvidence(evidence, $"{name}={text}");
+                if (LooksLikeGemText(text)) option.IsGem = true;
+            }
+        }
+
+        private static object TryGetMember(object obj, string name, BindingFlags flags)
+        {
+            if (obj == null) return null;
+            var type = obj.GetType();
+            for (var t = type; t != null; t = t.BaseType)
+            {
+                try
+                {
+                    var prop = t.GetProperty(name, flags);
+                    if (prop != null && prop.GetIndexParameters().Length == 0)
+                        return prop.GetValue(obj);
+                }
+                catch { }
+                try
+                {
+                    var field = t.GetField(name, flags);
+                    if (field != null) return field.GetValue(obj);
+                }
+                catch { }
+            }
+            return null;
+        }
+
+        private static bool LooksLikeGemText(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return false;
+            var lower = text.ToLowerInvariant();
+            return lower.Contains("gem") || lower.Contains("jewel") || lower.Contains("socket") ||
+                   lower.Contains("pickup") || lower.Contains("\u5b9d\u77f3");
+        }
+
+        private static string SafeTypeName(object obj)
+        {
+            try
+            {
+                if (obj is Component c)
+                    return c.GetIl2CppType()?.Name ?? c.GetType().Name;
+                return obj.GetType().Name;
+            }
+            catch { return "(unknown)"; }
+        }
+
+        private static void AppendEvidence(StringBuilder sb, string value)
+        {
+            if (sb.Length > 240) return;
+            if (sb.Length > 0) sb.Append("; ");
+            sb.Append(value);
+        }
+
+        private static string BuildPath(Transform t)
+        {
+            if (t == null) return "(null)";
+            if (t.parent == null) return t.name;
+            return BuildPath(t.parent) + "/" + t.name;
+        }
+
         // ── Dungeon: chest interaction menu (WorldSpace MenuCanvas on chest) ──
 
-        internal Button GetChestDoneButton() => FindChestMenuButton("DoneButton");
-        internal Button GetChestOpenButton() => FindChestMenuButton("OpenButton");
+        internal Button GetChestDoneButton() => FindChestMenuButton("DoneButton", "done", "cash", "cashout", "coin");
+        internal Button GetChestOpenButton() => FindChestMenuButton("OpenButton", "open");
 
-        private static Button FindChestMenuButton(string childName)
+        private static Button FindChestMenuButton(string childName, params string[] looseHints)
         {
             foreach (var canvas in UnityEngine.Object.FindObjectsOfType<Canvas>())
             {
@@ -110,8 +333,30 @@ namespace VampireCrawlersFarmBot
                 var btn = t.GetComponent<Button>();
                 if (btn != null) return btn;
             }
+
+            foreach (var btn in UnityEngine.Object.FindObjectsOfType<Button>(true))
+            {
+                if (btn == null || !btn.interactable || !btn.gameObject.activeInHierarchy) continue;
+                var path = BuildPath(btn.transform);
+                var lower = path.ToLowerInvariant();
+                if (!LooksLikeChestButtonContext(lower)) continue;
+
+                if (btn.gameObject.name == childName || lower.Contains(childName.ToLowerInvariant()))
+                    return btn;
+
+                foreach (var hint in looseHints)
+                    if (lower.Contains(hint))
+                        return btn;
+            }
             return null;
         }
+
+        private static bool LooksLikeChestButtonContext(string lowerPath)
+            => lowerPath.Contains("chest") ||
+               lowerPath.Contains("treasure") ||
+               lowerPath.Contains("reward") ||
+               lowerPath.Contains("coins") ||
+               lowerPath.Contains("cash");
 
         // ── Dungeon: exit to village ─────────────────────────────────────────
 
@@ -190,7 +435,7 @@ namespace VampireCrawlersFarmBot
         // ── Dungeon: player ──────────────────────────────────────────────────
 
         internal Transform GetPlayerTransform()
-            => GameObject.Find("CardGame/Player")?.transform;
+            => GameObject.Find("DungeonPlayer")?.transform ?? GameObject.Find("CardGame/Player")?.transform;
 
         // ── Dungeon: post-run screens (paths TBD — need in-dungeon F9 dump) ──
 
