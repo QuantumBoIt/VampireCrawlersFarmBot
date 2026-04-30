@@ -1,5 +1,5 @@
-﻿using BepInEx;
-using BepInEx.IL2CPP;
+using BepInEx;
+using BepInEx.Unity.IL2CPP;
 
 namespace VampireCrawlersFarmBot
 {
@@ -8,8 +8,10 @@ namespace VampireCrawlersFarmBot
     {
         public override void Load()
         {
-            // Plugin startup logic
-            Log.LogInfo($"Plugin {PluginInfo.PLUGIN_GUID} is loaded!");
+            BotLogger.Init(Log);
+            _ = new BotConfig(Config);
+            BotLogger.Info($"FarmBot loaded. Version: {PluginInfo.PLUGIN_VERSION}");
+            AddComponent<FarmBotRunner>();
         }
     }
 }
