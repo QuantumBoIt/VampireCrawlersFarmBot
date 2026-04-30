@@ -14,6 +14,61 @@ namespace VampireCrawlersFarmBot
             "entrance", "treasure", "loot", "reward", "spawn"
         };
 
+        // Dumps the full DungeonMinimap child hierarchy — call from F11 inside dungeon
+        // to learn room-marker names and positions for future chest navigation.
+        internal void DumpMinimapHierarchy()
+        {
+            var minimap = UnityEngine.GameObject.Find("DungeonMinimap");
+            if (minimap == null) { BotLogger.Warn("DumpMinimap: DungeonMinimap not found"); return; }
+            BotLogger.Info("=== Minimap Hierarchy Begin ===");
+            DumpTree(minimap.transform, 0);
+            BotLogger.Info("=== Minimap Hierarchy End ===");
+        }
+
+        private static void DumpTree(UnityEngine.Transform t, int depth)
+        {
+            try
+            {
+                string indent = new string(' ', depth * 2);
+                var lp = t.localPosition;
+                BotLogger.Info(
+                    $"  {indent}\"{t.name}\"" +
+                    $"  lpos=({lp.x:F1},{lp.y:F1},{lp.z:F1})" +
+                    $"  active={t.gameObject.activeInHierarchy}" +
+                    $"  comps={ComponentSummary(t.gameObject)}");
+                for (int i = 0; i < t.childCount; i++)
+                    DumpTree(t.GetChild(i), depth + 1);
+            }
+            catch (System.Exception ex) { BotLogger.Warn($"DumpTree error: {ex.Message}"); }
+        }
+
+        // Returns active TreasureChestCard transforms that are not pooled (y not ≈1000).
+        // In a Doom-style grid dungeon chests only activate when the player enters their
+        // room, so this returns non-empty only when the player is currently in a chest room.
+        internal System.Collections.Generic.List<Transform> FindChestTransforms()
+        {
+            var result = new System.Collections.Generic.List<Transform>();
+            try
+            {
+                foreach (var go in UnityEngine.Object.FindObjectsOfType<UnityEngine.GameObject>(true))
+                {
+                    try
+                    {
+                        if (!go.name.StartsWith("TreasureChestCard")) continue;
+                        if (!go.activeInHierarchy) continue;
+                        var pos = go.transform.position;
+                        if (UnityEngine.Mathf.Abs(pos.y - 1000f) < 50f) continue; // pooled
+                        result.Add(go.transform);
+                        BotLogger.Info($"FindChestTransforms: active chest {go.name} at {pos}");
+                    }
+                    catch { }
+                }
+            }
+            catch (System.Exception ex) { BotLogger.Warn($"FindChestTransforms error: {ex.Message}"); }
+            BotLogger.Info($"FindChestTransforms: found {result.Count} active chest(s)");
+            return result;
+        }
+
         internal void DumpMapObjects()
         {
             BotLogger.Info("=== F10 Map Dump Begin ===");

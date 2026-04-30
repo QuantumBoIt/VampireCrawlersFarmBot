@@ -17,8 +17,9 @@ namespace VampireCrawlersFarmBot
         UseNuke,
         ResolveLevelUps,
         ReadMap,
+        ExploreGrid,       // systematic room-by-room dungeon exploration
 
-        // Chest loop
+        // Chest loop (reached from ExploreGrid when chest menu opens)
         SelectNextChest,
         NavigateToChest,
         LocalScanChest,

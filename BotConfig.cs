@@ -35,6 +35,14 @@ namespace VampireCrawlersFarmBot
         internal ConfigEntry<int> TurnWaitMs { get; }
         internal ConfigEntry<int> StateTimeoutSeconds { get; }
 
+        // Movement keys (new Input System Key names, used for dungeon navigation)
+        internal ConfigEntry<string> MoveForward { get; }
+        internal ConfigEntry<string> MoveBack    { get; }
+        internal ConfigEntry<string> TurnLeft    { get; }
+        internal ConfigEntry<string> TurnRight   { get; }
+        internal ConfigEntry<string> Interact    { get; }
+        internal ConfigEntry<string> OpenMenu    { get; }
+
         // Rewards
         internal ConfigEntry<bool> AvoidGem { get; }
         internal ConfigEntry<bool> SkipIfUncertain { get; }
@@ -67,6 +75,13 @@ namespace VampireCrawlersFarmBot
             MoveWaitMs = cfg.Bind("Timing", "MoveWaitMs", 300, "Milliseconds between movement steps.");
             TurnWaitMs = cfg.Bind("Timing", "TurnWaitMs", 200, "Milliseconds between turn steps.");
             StateTimeoutSeconds = cfg.Bind("Timing", "StateTimeoutSeconds", 20, "Seconds before a stuck state triggers Recovery.");
+
+            MoveForward = cfg.Bind("Movement", "MoveForward", "W",       "Key to move the player forward one tile.");
+            MoveBack    = cfg.Bind("Movement", "MoveBack",    "S",       "Key to move backward / used for 180° turns.");
+            TurnLeft    = cfg.Bind("Movement", "TurnLeft",    "A",       "Key to turn the player left 90°.");
+            TurnRight   = cfg.Bind("Movement", "TurnRight",   "D",       "Key to turn the player right 90°.");
+            Interact    = cfg.Bind("Movement", "Interact",    "E",       "Key to interact with chests / exits.");
+            OpenMenu    = cfg.Bind("Movement", "OpenMenu",    "Escape",  "Key to open the pause / exit menu.");
 
             AvoidGem = cfg.Bind("Rewards", "AvoidGem", true, "Do not select gem upgrades.");
             SkipIfUncertain = cfg.Bind("Rewards", "SkipIfUncertain", true, "Skip upgrade if it cannot be classified as safe.");
