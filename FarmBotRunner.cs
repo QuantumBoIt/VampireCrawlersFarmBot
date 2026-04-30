@@ -19,6 +19,12 @@ namespace VampireCrawlersFarmBot
         private RewardPolicy _rewards;
         private ChestPolicy _chest;
 
+        // Per-state timing
+        private float _waitUntil;
+        private int _swipeCount;
+        private float _lastLogTime;
+        private bool _triedSubmit;
+
         private void Awake()
         {
             _sm = new FarmStateMachine();
@@ -54,6 +60,8 @@ namespace VampireCrawlersFarmBot
                 _enabled = false;
             }
         }
+
+        // ── Hotkeys ──────────────────────────────────────────────────────────
 
         private static bool KeyPressed(string keyName)
         {
@@ -102,17 +110,21 @@ namespace VampireCrawlersFarmBot
             }
         }
 
+        // ── State machine ────────────────────────────────────────────────────
+
         private void TickStateMachine()
         {
             var state = _sm.CurrentState;
+            var timeout = BotConfig.Instance.StateTimeoutSeconds.Value;
 
             if (state != _lastTickedState)
             {
                 BotLogger.Debug($"Tick: entering state {state}");
                 _lastTickedState = state;
+                _triedSubmit = false;
+                // Brief wait at the start of every new state to let the game UI settle
+                SetWait(BotConfig.Instance.UiWaitMs.Value);
             }
-
-            var timeout = BotConfig.Instance.StateTimeoutSeconds.Value;
 
             switch (state)
             {
@@ -120,23 +132,23 @@ namespace VampireCrawlersFarmBot
                     break;
 
                 case FarmState.ToWorldMap:
-                    TickStub(state, timeout);
+                    TickToWorldMap(timeout);
                     break;
 
                 case FarmState.SelectDairyPlant:
-                    TickStub(state, timeout);
+                    TickSelectDairyPlant(timeout);
                     break;
 
                 case FarmState.SelectCurdlingFactory:
-                    TickStub(state, timeout);
+                    TickSelectCurdlingFactory(timeout);
                     break;
 
                 case FarmState.EnterStage:
-                    TickStub(state, timeout);
+                    TickEnterStage(timeout);
                     break;
 
                 case FarmState.WaitRunLoaded:
-                    TickStub(state, timeout);
+                    TickWaitRunLoaded(timeout * 3);
                     break;
 
                 case FarmState.UseNuke:
@@ -215,6 +227,153 @@ namespace VampireCrawlersFarmBot
                     _recovery.EnterRecovery($"Unknown state {state}");
                     break;
             }
+        }
+
+        // ── Phase 2: Menu navigation ─────────────────────────────────────────
+
+        // Wait for the WorldMap button to appear in the town carousel and click it.
+        private void TickToWorldMap(float timeout)
+        {
+            if (_sm.TimedOut(timeout))
+            {
+                _recovery.EnterRecovery($"ToWorldMap timed out after {timeout}s");
+                return;
+            }
+            if (!WaitDone()) return;
+            if (!_game.IsInVillage())
+            {
+                BotLogger.Debug("ToWorldMap: not in village scene yet...");
+                return;
+            }
+            var btn = _game.GetWorldMapButton();
+            if (btn == null)
+            {
+                BotLogger.Debug("ToWorldMap: WorldMap button not found yet...");
+                return;
+            }
+            _input.ClickButton(btn, "WorldMap");
+            _sm.TransitionTo(FarmState.SelectDairyPlant, "WorldMap clicked");
+        }
+
+        // Wait for LevelSelect to open and click the DairyPlant world button.
+        // Uses timeout*5 because LevelSelect animation can take several seconds on first open.
+        private void TickSelectDairyPlant(float timeout)
+        {
+            if (_sm.TimedOut(timeout * 5))
+            {
+                _recovery.EnterRecovery($"SelectDairyPlant timed out after {timeout * 5}s");
+                return;
+            }
+            if (!WaitDone()) return;
+            var btn = _game.GetDairyPlantButton();
+            if (btn == null)
+            {
+                if (!_triedSubmit)
+                {
+                    _triedSubmit = true;
+                    BotLogger.Info("SelectDairyPlant: submitting current selection to advance world map");
+                    _input.SubmitCurrentSelection();
+                    SetWait(BotConfig.Instance.UiWaitMs.Value * 2);
+                }
+                else
+                {
+                    LogPeriodic("SelectDairyPlant: waiting for LevelSelect...");
+                }
+                return;
+            }
+            // "not interactable" means it is already selected — still OK to advance
+            _input.ClickButton(btn, "DairyPlant");
+            _swipeCount = 0;
+            _sm.TransitionTo(FarmState.SelectCurdlingFactory, "DairyPlant clicked");
+        }
+
+        // Wait for the stage info panel and swipe right until StartDungeonButton is enabled.
+        private void TickSelectCurdlingFactory(float timeout)
+        {
+            if (_sm.TimedOut(timeout))
+            {
+                _recovery.EnterRecovery($"SelectCurdlingFactory timed out after {timeout}s");
+                return;
+            }
+            if (!WaitDone()) return;
+            if (!_game.IsDairyPlantPanelVisible())
+            {
+                BotLogger.Debug("SelectCurdlingFactory: stage panel not visible yet...");
+                return;
+            }
+            var startBtn = _game.GetStartDungeonButton();
+            if (startBtn != null && startBtn.interactable)
+            {
+                _sm.TransitionTo(FarmState.EnterStage, "StartDungeonButton ready");
+                return;
+            }
+            if (_swipeCount >= BotConfig.Instance.MaxPathRetries.Value)
+            {
+                _recovery.EnterRecovery("StartDungeonButton never became interactable after max swipes");
+                return;
+            }
+            var swipeBtn = _game.GetRightSwipeButton();
+            if (swipeBtn == null)
+            {
+                BotLogger.Debug("SelectCurdlingFactory: RightSwipe button not found...");
+                return;
+            }
+            _input.ClickButton(swipeBtn, $"RightSwipe #{_swipeCount + 1}");
+            _swipeCount++;
+            SetWait(BotConfig.Instance.UiWaitMs.Value);
+        }
+
+        // Click StartDungeonButton to enter the stage.
+        private void TickEnterStage(float timeout)
+        {
+            if (_sm.TimedOut(timeout))
+            {
+                _recovery.EnterRecovery($"EnterStage timed out after {timeout}s");
+                return;
+            }
+            if (!WaitDone()) return;
+            var btn = _game.GetStartDungeonButton();
+            if (btn == null || !btn.interactable)
+            {
+                LogPeriodic("EnterStage: StartDungeonButton not ready...");
+                return;
+            }
+            if (!_input.ClickButton(btn, "StartDungeon"))
+            {
+                // Button GO may be mid-animation (interactable=true but inactive hierarchy)
+                LogPeriodic("EnterStage: click failed, retrying...");
+                return;
+            }
+            _sm.TransitionTo(FarmState.WaitRunLoaded, "StartDungeon clicked");
+        }
+
+        // Wait until the scene switches to the dungeon (SC_Game).
+        private void TickWaitRunLoaded(float timeout)
+        {
+            if (_sm.TimedOut(timeout))
+            {
+                _recovery.EnterRecovery($"WaitRunLoaded timed out after {timeout}s");
+                return;
+            }
+            if (_game.IsInDungeon())
+            {
+                _sm.TransitionTo(FarmState.UseNuke, "dungeon scene detected");
+                return;
+            }
+            BotLogger.Debug("WaitRunLoaded: waiting for SC_Game...");
+        }
+
+        // ── Helpers ──────────────────────────────────────────────────────────
+
+        private bool WaitDone() => Time.realtimeSinceStartup >= _waitUntil;
+        private void SetWait(int ms) => _waitUntil = Time.realtimeSinceStartup + ms / 1000f;
+
+        // Log at Info level but throttle to once every 2 seconds to avoid log spam.
+        private void LogPeriodic(string msg)
+        {
+            if (Time.realtimeSinceStartup - _lastLogTime < 2f) return;
+            _lastLogTime = Time.realtimeSinceStartup;
+            BotLogger.Info(msg);
         }
 
         private void TickStub(FarmState state, float timeoutSeconds)
