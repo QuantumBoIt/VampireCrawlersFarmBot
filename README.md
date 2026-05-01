@@ -6,7 +6,7 @@ Earlier development used separate helper mods as reference code. They are no lon
 
 ## Current Capabilities
 
-The FarmBot currently supports the configured Dairy Plant route. By default it selects the Dairy Plant world and the Curdling Factory stage. The world and stage names are configurable, and the Dairy Plant sub-stage picker is driven with staged keyboard navigation so it follows the game's highlighted row instead of relying on fragile mouse coordinates.
+The FarmBot currently supports the configured Dairy Plant route. By default it selects the Dairy Plant world and the Curdling Factory stage. The world and stage names are configurable, and the Dairy Plant sub-stage picker refreshes the game's pointer-driven highlighted row before entering the stage.
 
 1. Start from the town map.
 2. Open the world map.
@@ -43,7 +43,7 @@ Default hotkeys are configured through BepInEx config entries:
 - `F11`: log current state and dungeon debug snapshots. Requires `VerboseLogging = true` for full snapshots.
 - `F12`: emergency stop.
 
-When enabled with `F8`, the bot starts from the current town state and proceeds through the full route. With `LoopRuns = true`, it starts another run after returning to town.
+When enabled with `F8`, the bot starts from the current town state and proceeds through the full route. With `LoopRuns = true`, it starts another run after returning to town. A run watchdog aborts back to town if an in-dungeon run exceeds the configured time limit.
 
 ## Configuration
 
@@ -73,6 +73,7 @@ Important options:
 - `Timing.MoveWaitMs`: delay after movement actions.
 - `Timing.TurnWaitMs`: delay after turns.
 - `Timing.StateTimeoutSeconds`: recovery timeout.
+- `Timing.RunWatchdogSeconds`: maximum in-dungeon run time before aborting to village. Defaults to `180`; set `0` to disable.
 - `Rewards.AvoidGem`: avoid gem upgrades.
 - `Rewards.SkipIfUncertain`: keep uncertain reward handling conservative.
 - `Chest.PreferCashOut`: choose chest cash-out.

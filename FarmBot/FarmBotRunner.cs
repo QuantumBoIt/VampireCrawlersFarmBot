@@ -46,6 +46,8 @@ namespace VampireCrawlersFarmBot
         private int _stageConfirmClickAttempts;
         private bool _stageSelectedByKeyboard;
         private float _villageReturnedAt;
+        private float _runStartedAt;
+        private bool _runWatchdogTriggered;
 
         // Current navigation target (chest or exit marker)
         private MapMarker _navTarget;
@@ -182,6 +184,12 @@ namespace VampireCrawlersFarmBot
                     _pauseOpenAttempts = 0;
                 if (state == FarmState.UseNuke)
                 {
+                    if (_runStartedAt <= 0f)
+                    {
+                        _runStartedAt = Time.realtimeSinceStartup;
+                        _runWatchdogTriggered = false;
+                        BotLogger.Info($"RunWatchdog: run timer started ({BotConfig.Instance.RunWatchdogSeconds.Value}s limit).");
+                    }
                     _nav.ResetRun();
                     _selectedStageButtonGo = null;
                     _selectedStageSlot = 0;
@@ -191,6 +199,8 @@ namespace VampireCrawlersFarmBot
                 }
                 if (state == FarmState.ToWorldMap)
                 {
+                    _runStartedAt = 0f;
+                    _runWatchdogTriggered = false;
                     _selectedStageButtonGo = null;
                     _selectedStageSlot = 0;
                     _selectedStageClickTime = 0f;
@@ -208,9 +218,16 @@ namespace VampireCrawlersFarmBot
                     _stageConfirmClickAttempts = 0;
                 }
                 if (state == FarmState.WaitVillageReturned)
+                {
+                    _runStartedAt = 0f;
+                    _runWatchdogTriggered = false;
                     _villageReturnedAt = 0f;
+                }
                 SetWait(BotConfig.Instance.UiWaitMs.Value);
             }
+
+            if (CheckRunWatchdog(state))
+                return;
 
             switch (state)
             {
@@ -1539,6 +1556,58 @@ namespace VampireCrawlersFarmBot
 
         private bool WaitDone() => Time.realtimeSinceStartup >= _waitUntil;
         private void SetWait(int ms) => _waitUntil = Time.realtimeSinceStartup + ms / 1000f;
+
+        private bool CheckRunWatchdog(FarmState state)
+        {
+            var limit = BotConfig.Instance.RunWatchdogSeconds.Value;
+            if (limit <= 0 || _runWatchdogTriggered || !IsRunWatchdogState(state))
+                return false;
+
+            if (!_game.IsInDungeon())
+                return false;
+
+            if (_runStartedAt <= 0f)
+            {
+                _runStartedAt = Time.realtimeSinceStartup;
+                BotLogger.Info($"RunWatchdog: late timer start in state {state} ({limit}s limit).");
+                return false;
+            }
+
+            var elapsed = Time.realtimeSinceStartup - _runStartedAt;
+            if (elapsed < limit)
+                return false;
+
+            _runWatchdogTriggered = true;
+            _triedSubmit = false;
+            _pauseOpenAttempts = 0;
+            BotLogger.Warn($"RunWatchdog: run exceeded {limit}s in state {state}; aborting to village.");
+            _sm.TransitionTo(FarmState.OpenPauseMenu, $"run watchdog exceeded {limit}s");
+            SetWait(BotConfig.Instance.UiWaitMs.Value);
+            return true;
+        }
+
+        private static bool IsRunWatchdogState(FarmState state)
+        {
+            switch (state)
+            {
+                case FarmState.UseNuke:
+                case FarmState.ResolveLevelUps:
+                case FarmState.ReadMap:
+                case FarmState.ExploreGrid:
+                case FarmState.SelectNextChest:
+                case FarmState.NavigateToChest:
+                case FarmState.LocalScanChest:
+                case FarmState.OpenChest:
+                case FarmState.CashOutChest:
+                case FarmState.MarkChestDone:
+                case FarmState.NavigateToExit:
+                case FarmState.LocalScanExit:
+                case FarmState.EnterExit:
+                    return true;
+                default:
+                    return false;
+            }
+        }
 
         private string GetCurrentFacingLabel()
         {
