@@ -1,6 +1,7 @@
 using System;
 using UnityEngine;
 using UnityEngine.InputSystem;
+using UnityEngine.UI;
 
 namespace VampireCrawlersFarmBot
 {
@@ -44,8 +45,6 @@ namespace VampireCrawlersFarmBot
         private int _stageSubmitAttempts;
         private int _stageConfirmClickAttempts;
         private bool _stageSelectedByKeyboard;
-        private int _stageKeyboardTargetDownPresses;
-        private int _stageKeyboardDownPressesSent;
         private float _villageReturnedAt;
 
         // Current navigation target (chest or exit marker)
@@ -199,8 +198,6 @@ namespace VampireCrawlersFarmBot
                     _stageSubmitAttempts = 0;
                     _stageConfirmClickAttempts = 0;
                     _stageSelectedByKeyboard = false;
-                    _stageKeyboardTargetDownPresses = 0;
-                    _stageKeyboardDownPressesSent = 0;
                 }
                 if (state == FarmState.SelectDairyPlant)
                     _swipeCount = 0;
@@ -358,24 +355,6 @@ namespace VampireCrawlersFarmBot
             if (!_game.IsDairyPlantPanelVisible()) { BotLogger.Debug("SelectCurdlingFactory: stage panel not visible yet..."); return; }
 
             var targetStage = BotConfig.Instance.StageName.Value;
-            if (_stageKeyboardTargetDownPresses > 0)
-            {
-                if (_stageKeyboardDownPressesSent < _stageKeyboardTargetDownPresses)
-                {
-                    _stageKeyboardDownPressesSent++;
-                    BotLogger.Info($"StageSelect: keyboard Down {_stageKeyboardDownPressesSent}/{_stageKeyboardTargetDownPresses}");
-                    _input.PressDown();
-                    SetWait(Math.Max(BotConfig.Instance.UiWaitMs.Value / 2, 250));
-                    return;
-                }
-
-                _selectedStageClickTime = Time.realtimeSinceStartup;
-                _stageSelectedByKeyboard = true;
-                SetWait(BotConfig.Instance.UiWaitMs.Value);
-                _sm.TransitionTo(FarmState.EnterStage, $"Stage({targetStage}) selected by keyboard");
-                return;
-            }
-
             if (!_game.IsSelectedStage(targetStage))
             {
                 var stageBtn = _game.GetStageButton(targetStage);
@@ -390,14 +369,14 @@ namespace VampireCrawlersFarmBot
                         return;
                     }
 
-                    // The sub-level list keeps keyboard focus on the first row when the
-                    // world opens. Keyboard navigation is more reliable here than
-                    // synthetic RectTransform mouse clicks, because the game highlights
-                    // rows and only enters the highlighted row.
-                    _stageKeyboardTargetDownPresses = Math.Max(0, _selectedStageSlot - 1);
-                    _stageKeyboardDownPressesSent = 0;
-                    BotLogger.Info($"StageSelect: target stage slot = {_selectedStageSlot}; staged keyboard Down presses = {_stageKeyboardTargetDownPresses}");
-                    SetWait(Math.Max(BotConfig.Instance.UiWaitMs.Value / 2, 250));
+                    // The level-select UI updates its highlighted row from pointer
+                    // hover/move state. Direct Button.onClick can play a sound but
+                    // leave currentSelectedGameObject on slot 1, so move/click the
+                    // real cursor first, then send Unity pointer events as fallback.
+                    _stageSelectedByKeyboard = false;
+                    BotLogger.Info($"StageSelect: selecting target stage slot {_selectedStageSlot} via pointer click; current selection before = {_input.GetCurrentSelectionPath()}");
+                    PointerSelectStage(targetStage);
+                    SetWait(BotConfig.Instance.UiWaitMs.Value);
                     return;
                 }
 
@@ -441,21 +420,6 @@ namespace VampireCrawlersFarmBot
                 return;
             }
 
-            var btn = _game.GetStartDungeonButton();
-            if (btn != null && btn.interactable)
-            {
-                if (!_input.ClickGameObjectFull(btn.gameObject, "StartDungeon") &&
-                    !_input.ClickButton(btn, "StartDungeon"))
-                {
-                    LogPeriodic("EnterStage: StartDungeon click failed, retrying...");
-                    SetWait(BotConfig.Instance.UiWaitMs.Value);
-                    return;
-                }
-                SetWait(BotConfig.Instance.UiWaitMs.Value * 2);
-                _sm.TransitionTo(FarmState.WaitRunLoaded, "StartDungeon clicked");
-                return;
-            }
-
             if (!_triedSubmit)
             {
                 var targetStage = BotConfig.Instance.StageName.Value;
@@ -485,6 +449,21 @@ namespace VampireCrawlersFarmBot
                     BotLogger.Warn("EnterStage: target stage slot unknown; refusing blind Enter");
                     SetWait(BotConfig.Instance.UiWaitMs.Value);
                 }
+                return;
+            }
+
+            var btn = _game.GetStartDungeonButton();
+            if (btn != null && btn.interactable)
+            {
+                if (!_input.ClickGameObjectFull(btn.gameObject, "StartDungeon") &&
+                    !_input.ClickButton(btn, "StartDungeon"))
+                {
+                    LogPeriodic("EnterStage: StartDungeon click failed, retrying...");
+                    SetWait(BotConfig.Instance.UiWaitMs.Value);
+                    return;
+                }
+                SetWait(BotConfig.Instance.UiWaitMs.Value * 2);
+                _sm.TransitionTo(FarmState.WaitRunLoaded, "StartDungeon clicked");
                 return;
             }
 
@@ -525,7 +504,7 @@ namespace VampireCrawlersFarmBot
         {
             if (_stageSelectedByKeyboard)
             {
-                BotLogger.Info($"StageSelect: submitting keyboard-selected stage '{targetStage}'");
+                BotLogger.Info($"StageSelect: submitting keyboard-selected stage '{targetStage}', current selection = {_input.GetCurrentSelectionPath()}");
                 _input.SubmitCurrentSelection();
                 _input.PressEnter();
                 _input.PressSpace();
@@ -574,6 +553,34 @@ namespace VampireCrawlersFarmBot
         }
 
         // ── Phase 3: Dungeon — entry ─────────────────────────────────────────
+
+        private void PointerSelectStage(string targetStage)
+        {
+            if (_selectedStageButtonGo == null)
+                return;
+
+            var stageRoot = GetSubLevelRoot(_selectedStageButtonGo);
+            if (stageRoot != null)
+            {
+                _input.MoveCursorToGameObjectOs(stageRoot, $"StageHover({targetStage})");
+                if (!_input.ClickGameObjectOs(stageRoot, $"StageSelectRoot({targetStage})"))
+                    _input.ClickGameObjectFull(stageRoot, $"StageSelectRoot({targetStage})");
+                _input.SubmitGameObject(stageRoot, $"StageSelectRoot({targetStage})");
+            }
+
+            if (!_input.ClickGameObjectOs(_selectedStageButtonGo, $"StageSelectButton({targetStage})"))
+            {
+                if (!_input.ClickGameObjectFull(_selectedStageButtonGo, $"StageSelectButton({targetStage})"))
+                {
+                    var button = _selectedStageButtonGo.GetComponent<Button>();
+                    if (button != null)
+                        _input.ClickButton(button, $"StageSelectButton({targetStage})");
+                }
+            }
+
+            _input.SubmitGameObject(_selectedStageButtonGo, $"StageSelectButton({targetStage})");
+            _selectedStageClickTime = Time.realtimeSinceStartup;
+        }
 
         // Clicks BombaInfernale/button (NukeButton component, not standard Button).
         // Uses ExecuteEvents.Execute with pointerClickHandler so custom components
@@ -1593,6 +1600,24 @@ namespace VampireCrawlersFarmBot
                 if (t.name.StartsWith("UI_MapLocations_SubLevelInfo", StringComparison.Ordinal))
                     return t.gameObject;
             }
+            return null;
+        }
+
+        private static GameObject GetSubLevelButtonAtSlot(GameObject reference, int slot)
+        {
+            var root = GetSubLevelRoot(reference);
+            var parent = root == null ? null : root.transform.parent;
+            if (parent == null) return null;
+
+            for (var i = 0; i < parent.childCount; i++)
+            {
+                var child = parent.GetChild(i);
+                if (GetSubLevelSlot(child.gameObject) != slot) continue;
+
+                var button = child.GetComponentInChildren<Button>(true);
+                return button == null ? child.gameObject : button.gameObject;
+            }
+
             return null;
         }
 

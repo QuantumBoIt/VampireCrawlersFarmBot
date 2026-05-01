@@ -122,7 +122,7 @@ namespace VampireCrawlersFarmBot
             if (es == null) { BotLogger.Warn("SubmitCurrentSelection: no EventSystem"); return false; }
             var go = es.currentSelectedGameObject;
             if (go == null) { BotLogger.Warn("SubmitCurrentSelection: nothing selected"); return false; }
-            BotLogger.Info($"SubmitCurrentSelection: {go.name}");
+            BotLogger.Info($"SubmitCurrentSelection: {BuildPath(go.transform)}");
             try
             {
                 ExecuteEvents.Execute(go, new BaseEventData(es), ExecuteEvents.submitHandler);
@@ -133,6 +133,32 @@ namespace VampireCrawlersFarmBot
                 BotLogger.Error($"SubmitCurrentSelection failed ({go.name})", ex);
                 return false;
             }
+        }
+
+        internal bool SelectGameObject(GameObject go, string label = "")
+        {
+            if (go == null) { BotLogger.Warn($"SelectGameObject: null ({label})"); return false; }
+            var es = EventSystem.current;
+            if (es == null) { BotLogger.Warn($"SelectGameObject: no EventSystem ({label})"); return false; }
+
+            try
+            {
+                es.SetSelectedGameObject(go);
+                BotLogger.Info($"SelectGO: {label} -> {BuildPath(go.transform)}");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                BotLogger.Error($"SelectGameObject failed ({label})", ex);
+                return false;
+            }
+        }
+
+        internal string GetCurrentSelectionPath()
+        {
+            var es = EventSystem.current;
+            var go = es == null ? null : es.currentSelectedGameObject;
+            return go == null ? "(none)" : BuildPath(go.transform);
         }
 
         internal bool SubmitCurrentSelectionIfPathContains(string requiredHint)
@@ -233,6 +259,9 @@ namespace VampireCrawlersFarmBot
         [DllImport("user32.dll")]
         private static extern bool ClientToScreen(IntPtr hWnd, ref POINT lpPoint);
 
+        [DllImport("user32.dll")]
+        private static extern bool GetClientRect(IntPtr hWnd, out RECT lpRect);
+
         [StructLayout(LayoutKind.Sequential)]
         private struct POINT
         {
@@ -240,9 +269,46 @@ namespace VampireCrawlersFarmBot
             public int Y;
         }
 
+        [StructLayout(LayoutKind.Sequential)]
+        private struct RECT
+        {
+            public int Left;
+            public int Top;
+            public int Right;
+            public int Bottom;
+        }
+
         private const uint KEYEVENTF_KEYUP = 0x0002;
+        private const uint MOUSEEVENTF_MOVE = 0x0001;
         private const uint MOUSEEVENTF_LEFTDOWN = 0x0002;
         private const uint MOUSEEVENTF_LEFTUP = 0x0004;
+
+        internal bool MoveCursorToGameObjectOs(GameObject go, string label = "")
+        {
+            if (go == null) { BotLogger.Warn($"MoveCursorToGameObjectOs: null ({label})"); return false; }
+            var rect = go.GetComponent<RectTransform>();
+            if (rect == null) { BotLogger.Warn($"MoveCursorToGameObjectOs: no RectTransform ({label})"); return false; }
+
+            try
+            {
+                if (!TryGetDesktopPoint(go, out var screen, out var clientPoint, out var point, out var hwnd, out var converted, out var clientSize, out var scale))
+                    return false;
+
+                BotLogger.Info(
+                    $"MoveCursorOS: {label} -> {BuildPath(go.transform)} " +
+                    $"unity=({screen.x:F1},{screen.y:F1}) client=({clientPoint.X},{clientPoint.Y}) " +
+                    $"desktop=({point.X},{point.Y}) screen={Screen.width}x{Screen.height} " +
+                    $"clientSize=({clientSize.X},{clientSize.Y}) scale=({scale.x:F2},{scale.y:F2}) " +
+                    $"hwnd=0x{hwnd.ToInt64():X} converted={converted}");
+                MoveCursorWithDelta(point);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                BotLogger.Error($"MoveCursorToGameObjectOs failed ({label})", ex);
+                return false;
+            }
+        }
 
         internal bool ClickGameObjectOs(GameObject go, string label = "")
         {
@@ -252,27 +318,16 @@ namespace VampireCrawlersFarmBot
 
             try
             {
-                Camera cam = null;
-                var canvas = go.GetComponentInParent<Canvas>();
-                if (canvas != null && canvas.renderMode != RenderMode.ScreenSpaceOverlay)
-                    cam = canvas.worldCamera;
-
-                var screen = RectTransformUtility.WorldToScreenPoint(cam, rect.TransformPoint(rect.rect.center));
-                var clientPoint = new POINT
-                {
-                    X = Mathf.RoundToInt(screen.x),
-                    Y = Mathf.RoundToInt(Screen.height - screen.y)
-                };
-                var point = clientPoint;
-
-                var hwnd = GetForegroundWindow();
-                var converted = hwnd != IntPtr.Zero && ClientToScreen(hwnd, ref point);
+                if (!TryGetDesktopPoint(go, out var screen, out var clientPoint, out var point, out var hwnd, out var converted, out var clientSize, out var scale))
+                    return false;
 
                 BotLogger.Info(
                     $"ClickOS: {label} -> {BuildPath(go.transform)} " +
                     $"unity=({screen.x:F1},{screen.y:F1}) client=({clientPoint.X},{clientPoint.Y}) " +
-                    $"desktop=({point.X},{point.Y}) screen={Screen.width}x{Screen.height} hwnd=0x{hwnd.ToInt64():X} converted={converted}");
-                SetCursorPos(point.X, point.Y);
+                    $"desktop=({point.X},{point.Y}) screen={Screen.width}x{Screen.height} " +
+                    $"clientSize=({clientSize.X},{clientSize.Y}) scale=({scale.x:F2},{scale.y:F2}) " +
+                    $"hwnd=0x{hwnd.ToInt64():X} converted={converted}");
+                MoveCursorWithDelta(point);
                 mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, UIntPtr.Zero);
                 mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, UIntPtr.Zero);
                 return true;
@@ -282,6 +337,68 @@ namespace VampireCrawlersFarmBot
                 BotLogger.Error($"ClickGameObjectOs failed ({label})", ex);
                 return false;
             }
+        }
+
+        private static bool TryGetDesktopPoint(
+            GameObject go,
+            out Vector2 screen,
+            out POINT clientPoint,
+            out POINT desktopPoint,
+            out IntPtr hwnd,
+            out bool converted,
+            out POINT clientSize,
+            out Vector2 scale)
+        {
+            screen = default;
+            clientPoint = default;
+            desktopPoint = default;
+            hwnd = IntPtr.Zero;
+            converted = false;
+            clientSize = default;
+            scale = Vector2.one;
+
+            var rect = go.GetComponent<RectTransform>();
+            if (rect == null)
+                return false;
+
+            Camera cam = null;
+            var canvas = go.GetComponentInParent<Canvas>();
+            if (canvas != null && canvas.renderMode != RenderMode.ScreenSpaceOverlay)
+                cam = canvas.worldCamera;
+
+            hwnd = GetForegroundWindow();
+            if (hwnd != IntPtr.Zero && GetClientRect(hwnd, out var clientRect))
+            {
+                var clientWidth = Math.Max(1, clientRect.Right - clientRect.Left);
+                var clientHeight = Math.Max(1, clientRect.Bottom - clientRect.Top);
+                clientSize = new POINT { X = clientWidth, Y = clientHeight };
+                scale = new Vector2(
+                    clientWidth / (float)Math.Max(1, Screen.width),
+                    clientHeight / (float)Math.Max(1, Screen.height));
+            }
+
+            screen = RectTransformUtility.WorldToScreenPoint(cam, rect.TransformPoint(rect.rect.center));
+            clientPoint = new POINT
+            {
+                X = Mathf.RoundToInt(screen.x * scale.x),
+                Y = Mathf.RoundToInt((Screen.height - screen.y) * scale.y)
+            };
+            desktopPoint = clientPoint;
+
+            converted = hwnd != IntPtr.Zero && ClientToScreen(hwnd, ref desktopPoint);
+            return true;
+        }
+
+        private static void MoveCursorWithDelta(POINT point)
+        {
+            // Unity's newer InputSystem can ignore SetCursorPos alone because it
+            // does not always produce pointer delta. Enter from a nearby pixel and
+            // finish with relative moves so hover-driven UI receives movement.
+            SetCursorPos(point.X - 3, point.Y - 3);
+            mouse_event(MOUSEEVENTF_MOVE, 1, 1, 0, UIntPtr.Zero);
+            mouse_event(MOUSEEVENTF_MOVE, 1, 1, 0, UIntPtr.Zero);
+            mouse_event(MOUSEEVENTF_MOVE, 1, 1, 0, UIntPtr.Zero);
+            SetCursorPos(point.X, point.Y);
         }
 
         internal void TapKey(Key key)

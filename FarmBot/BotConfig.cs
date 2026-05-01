@@ -69,6 +69,7 @@ namespace VampireCrawlersFarmBot
 
             WorldName = cfg.Bind("Stage", "WorldName", "乳品厂", "World/area name to select on the world map.");
             StageName = cfg.Bind("Stage", "StageName", "凝乳厂", "Stage name to enter inside the selected world. Examples: 乳品厂, 牛奶厂, 凝乳厂.");
+            NormalizeKnownStageConfig();
 
             MaxPathRetries = cfg.Bind("Navigation", "MaxPathRetries", 5, "Re-plan path this many times before giving up.");
             MaxMoveFailCount = cfg.Bind("Navigation", "MaxMoveFailCount", 3, "Consecutive failed moves before marking a direction blocked.");
@@ -94,6 +95,33 @@ namespace VampireCrawlersFarmBot
             ExpectedCashOutGold = cfg.Bind("Chest", "ExpectedCashOutGold", 200, "Expected gold from cashing out one chest.");
 
             Instance = this;
+        }
+
+        private void NormalizeKnownStageConfig()
+        {
+            WorldName.Value = NormalizeKnownStageName(WorldName.Value, "乳品厂");
+            StageName.Value = NormalizeKnownStageName(StageName.Value, "凝乳厂");
+        }
+
+        private static string NormalizeKnownStageName(string value, string fallback)
+        {
+            if (string.IsNullOrWhiteSpace(value)) return fallback;
+
+            var trimmed = value.Trim();
+            if (trimmed.Contains("乳品厂") || trimmed.Contains("牛奶厂") || trimmed.Contains("凝乳厂"))
+                return trimmed;
+
+            // Backward compatibility for config files generated while the source or
+            // PowerShell writes were mojibake. Keep this narrow so custom stage names
+            // are not rewritten accidentally.
+            if (trimmed.Contains("涔冲搧") || trimmed.Contains("娑斿啿"))
+                return "乳品厂";
+            if (trimmed.Contains("鐗涘ザ"))
+                return "牛奶厂";
+            if (trimmed.Contains("鍑濅钩"))
+                return "凝乳厂";
+
+            return trimmed;
         }
 
         // Parse a Key from its name string (e.g. "F8" → Key.F8).
