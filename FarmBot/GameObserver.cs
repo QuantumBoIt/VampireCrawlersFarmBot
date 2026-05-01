@@ -33,6 +33,10 @@ namespace VampireCrawlersFarmBot
             "LevelSelect/LevelSelectUI/Stages/MapLocationInfo (Dairy Plant)";
         private const string PathStartDungeonBtn =
             "LevelSelect/LevelSelectUI/Stages/MapLocationInfo (Dairy Plant)/StartDungeonButton/_StartDungeonButton";
+        private const string PathStageSelectionPanel =
+            "LevelSelect/LevelSelectUI/_LevelInfoContainer/UI_SelectionPanel_MapLocations";
+        private const string PathStageInfoPanel =
+            "LevelSelect/LevelSelectUI/_LevelInfoContainer/UI_SelectionPanel_MapLocations/BumphContianer/UI_MapLocations_StageInfoPanel";
         private const string PathTownLocationInfoPanel =
             "TownViewController/Canvas/CanvasShaker/UI_InfoPanel_TownLocations";
         private const string PathRightSwipeBtn =
@@ -100,13 +104,85 @@ namespace VampireCrawlersFarmBot
 
         internal bool IsDairyPlantPanelVisible()
         {
-            var go = GameObject.Find(PathDairyPlantPanel);
-            return go != null && go.activeInHierarchy;
+            return IsStageSelectionPanelVisible();
         }
 
-        internal Button GetStartDungeonButton() => FindButton(PathStartDungeonBtn);
-        internal Button GetRightSwipeButton()   => FindButton(PathRightSwipeBtn);
-        internal Button GetLeftSwipeButton()    => FindButton(PathLeftSwipeBtn);
+        internal bool IsStageSelectionPanelVisible()
+        {
+            return FindActiveObject(PathStageSelectionPanel) != null ||
+                   FindActiveObjectByPathHints("levelselectui", "ui_selectionpanel_maplocations") != null ||
+                   FindActiveObject(PathDairyPlantPanel) != null;
+        }
+
+        internal bool IsSelectedStage(string stageName)
+        {
+            if (string.IsNullOrWhiteSpace(stageName)) return true;
+
+            var go = FindActiveObject(PathStageInfoPanel) ??
+                     FindActiveObjectByPathHints("levelselectui", "ui_maplocations_stageinfopanel") ??
+                     FindActiveObject(PathDairyPlantPanel);
+
+            if (go == null)
+            {
+                BotLogger.Info($"StageSelect: no active stage info panel while looking for '{stageName}'");
+                return false;
+            }
+
+            var text = ReadTextBlob(go);
+            var normalizedText = NormalizeForMatch(text);
+            var normalizedTarget = NormalizeForMatch(stageName);
+            bool matched = normalizedText.Contains(normalizedTarget);
+            BotLogger.Info(
+                matched
+                    ? $"StageSelect: selected stage matches '{stageName}'"
+                    : $"StageSelect: selected stage is not '{stageName}', panel='{TrimForLog(text)}'");
+            return matched;
+        }
+
+        internal Button GetStageButton(string stageName)
+        {
+            if (string.IsNullOrWhiteSpace(stageName)) return null;
+
+            var target = NormalizeForMatch(stageName);
+            foreach (var btn in UnityEngine.Object.FindObjectsOfType<Button>(true))
+            {
+                if (btn == null || !btn.interactable || !btn.gameObject.activeInHierarchy) continue;
+
+                var path = BuildPath(btn.transform);
+                var lowerPath = path.ToLowerInvariant();
+                if (!lowerPath.Contains("levelselectui")) continue;
+                if (!lowerPath.Contains("ui_maplocations_sublevelinfo") &&
+                    !lowerPath.Contains("stageinfopanel") &&
+                    !lowerPath.Contains("startdungeonbutton"))
+                    continue;
+
+                var text = ReadTextAround(btn.transform);
+                var normalized = NormalizeForMatch(path + " " + text);
+                if (!normalized.Contains(target)) continue;
+
+                BotLogger.Info($"StageSelect: found stage button '{stageName}' at {path}, text='{TrimForLog(text)}'");
+                return btn;
+            }
+
+            BotLogger.Info($"StageSelect: active stage button '{stageName}' not found");
+            return null;
+        }
+
+        internal Button GetStartDungeonButton() =>
+            FindActiveButton(PathStartDungeonBtn) ??
+            FindActiveButtonByPathHints("levelselectui", "startdungeonbutton") ??
+            FindActiveButtonByPathHints("ui_selectionpanel_maplocations", "startdungeonbutton");
+
+        internal Button GetRightSwipeButton() =>
+            FindActiveButton(PathRightSwipeBtn) ??
+            FindActiveButtonByPathHints("levelselectui", "arrowrightbutton") ??
+            FindActiveButtonByPathHints("levelselectui", "rightswipe");
+
+        internal Button GetLeftSwipeButton() =>
+            FindActiveButton(PathLeftSwipeBtn) ??
+            FindActiveButtonByPathHints("levelselectui", "arrowleftbutton") ??
+            FindActiveButtonByPathHints("levelselectui", "leftswipe");
+
         internal Button GetYesButton()          => FindButton(PathYesBtn);
         internal Button GetNoButton()           => FindButton(PathNoBtn);
         internal GameObject GetYesButtonObject() => FindActiveObject(PathYesBtn) ?? FindActiveObjectByPathHints("messageboxmanager", "yesbutton");
@@ -629,11 +705,30 @@ namespace VampireCrawlersFarmBot
             return sb.ToString();
         }
 
+        private static string ReadTextAround(Transform t)
+        {
+            var sb = new StringBuilder();
+            for (int depth = 0; t != null && depth < 2; depth++, t = t.parent)
+                sb.Append(ReadTextBlob(t.gameObject)).Append(' ');
+            return sb.ToString();
+        }
+
         private static string TrimForLog(string value)
         {
             if (string.IsNullOrEmpty(value)) return "";
             value = value.Replace("\r", " ").Replace("\n", " ");
             return value.Length <= 160 ? value : value.Substring(0, 160);
+        }
+
+        private static string NormalizeForMatch(string value)
+        {
+            if (string.IsNullOrEmpty(value)) return "";
+            return value
+                .Replace(" ", "")
+                .Replace("\r", "")
+                .Replace("\n", "")
+                .Replace("\t", "")
+                .ToLowerInvariant();
         }
 
         private static Button FindActiveButtonByPathHints(params string[] hints)

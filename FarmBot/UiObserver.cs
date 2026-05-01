@@ -1,6 +1,9 @@
 using System;
+using System.Reflection;
 using System.Text;
+using TMPro;
 using UnityEngine;
+using UnityEngine.EventSystems;
 using UnityEngine.UI;
 
 namespace VampireCrawlersFarmBot
@@ -60,6 +63,8 @@ namespace VampireCrawlersFarmBot
                         BotLogger.Warn($"    Canvas error: {ex.Message}");
                     }
                 }
+
+                DumpLevelSelectDetails();
 
                 BotLogger.Info($"=== F9 UI Dump End ({hits} keyword hits) ===");
             }
@@ -160,6 +165,125 @@ namespace VampireCrawlersFarmBot
             foreach (var kw in kws)
                 if (lower.Contains(kw)) return true;
             return false;
+        }
+
+        private static void DumpLevelSelectDetails()
+        {
+            var root = GameObject.Find("LevelSelect/LevelSelectUI");
+            if (root == null || !root.activeInHierarchy) return;
+
+            BotLogger.Info("=== F9 LevelSelect Detail Begin ===");
+
+            var es = EventSystem.current;
+            var selected = es == null ? null : es.currentSelectedGameObject;
+            BotLogger.Info($"  EventSystem selected: {(selected == null ? "(null)" : BuildPath(selected.transform))}");
+
+            foreach (var go in UnityEngine.Object.FindObjectsOfType<GameObject>(true))
+            {
+                if (go == null || !go.activeInHierarchy) continue;
+                var path = BuildPath(go.transform);
+                var lower = path.ToLowerInvariant();
+                if (!lower.Contains("levelselect/levelselectui")) continue;
+                if (!lower.Contains("ui_maplocations_sublevelinfo") &&
+                    !lower.Contains("ui_maplocations_stageinfopanel") &&
+                    !lower.Contains("arrowrightbutton") &&
+                    !lower.Contains("arrowleftbutton") &&
+                    !lower.Contains("startdungeonbutton"))
+                    continue;
+
+                var rect = go.GetComponent<RectTransform>();
+                var pos = rect == null ? "" : $" rect=({rect.position.x:F1},{rect.position.y:F1}) size=({rect.rect.width:F1},{rect.rect.height:F1})";
+                var btn = go.GetComponent<Button>();
+                var interactable = btn == null ? "" : $" interactable={btn.interactable}";
+                BotLogger.Info($"  LevelSelect: {path} active={go.activeInHierarchy}{interactable}{pos} text='{Trim(ReadTextBlob(go))}' comps={ComponentSummary(go)}");
+
+                foreach (var c in go.GetComponents<Component>())
+                    DumpInterestingComponent(c, "    ");
+            }
+
+            BotLogger.Info("=== F9 LevelSelect Detail End ===");
+        }
+
+        private static void DumpInterestingComponent(Component c, string indent)
+        {
+            if (c == null) return;
+            string typeName;
+            try { typeName = c.GetIl2CppType()?.Name ?? c.GetType().Name; }
+            catch { typeName = c.GetType().Name; }
+
+            var lower = typeName.ToLowerInvariant();
+            if (!lower.Contains("sublevellocationinfo") &&
+                !lower.Contains("stageinfopanel") &&
+                !lower.Contains("pointerevents") &&
+                !lower.Contains("button"))
+                return;
+
+            BotLogger.Info($"{indent}Component {typeName}: {DumpSimpleMembers(c)}");
+        }
+
+        private static string DumpSimpleMembers(object obj)
+        {
+            var sb = new StringBuilder();
+            var flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+            var type = obj.GetType();
+
+            foreach (var f in type.GetFields(flags))
+            {
+                if (sb.Length > 400) break;
+                try
+                {
+                    var value = f.GetValue(obj);
+                    if (IsSimple(value))
+                        sb.Append(f.Name).Append('=').Append(value ?? "null").Append("; ");
+                }
+                catch { }
+            }
+
+            foreach (var p in type.GetProperties(flags))
+            {
+                if (sb.Length > 700) break;
+                try
+                {
+                    if (p.GetIndexParameters().Length != 0) continue;
+                    var value = p.GetValue(obj);
+                    if (IsSimple(value))
+                        sb.Append(p.Name).Append('=').Append(value ?? "null").Append("; ");
+                }
+                catch { }
+            }
+
+            if (sb.Length == 0) return "(no simple members)";
+            return sb.ToString();
+        }
+
+        private static bool IsSimple(object value)
+        {
+            if (value == null) return true;
+            var t = value.GetType();
+            return t.IsPrimitive || value is string || value is Enum;
+        }
+
+        private static string ReadTextBlob(GameObject root)
+        {
+            var sb = new StringBuilder();
+            try
+            {
+                foreach (var text in root.GetComponentsInChildren<Text>(true))
+                    if (text != null && !string.IsNullOrEmpty(text.text))
+                        sb.Append(text.text).Append(' ');
+                foreach (var text in root.GetComponentsInChildren<TMP_Text>(true))
+                    if (text != null && !string.IsNullOrEmpty(text.text))
+                        sb.Append(text.text).Append(' ');
+            }
+            catch { }
+            return sb.ToString();
+        }
+
+        private static string Trim(string value)
+        {
+            if (string.IsNullOrEmpty(value)) return "";
+            value = value.Replace("\r", " ").Replace("\n", " ");
+            return value.Length <= 120 ? value : value.Substring(0, 120);
         }
 
         private static string BuildPath(Transform t)

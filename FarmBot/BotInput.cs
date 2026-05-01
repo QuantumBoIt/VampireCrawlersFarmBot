@@ -194,6 +194,26 @@ namespace VampireCrawlersFarmBot
             return false;
         }
 
+        internal bool SubmitGameObject(GameObject go, string label = "")
+        {
+            if (go == null) { BotLogger.Warn($"SubmitGameObject: null ({label})"); return false; }
+            var es = EventSystem.current;
+            if (es == null) { BotLogger.Warn($"SubmitGameObject: no EventSystem ({label})"); return false; }
+
+            try
+            {
+                BotLogger.Info($"SubmitGO: {label} -> {BuildPath(go.transform)}");
+                es.SetSelectedGameObject(go);
+                ExecuteEvents.Execute(go, new BaseEventData(es), ExecuteEvents.submitHandler);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                BotLogger.Error($"SubmitGameObject failed ({label})", ex);
+                return false;
+            }
+        }
+
         // ── Keyboard simulation (Win32 P/Invoke) ────────────────────────────
         // Injects keystrokes at the OS level; Unity's InputSystem reads them
         // normally as long as the game window is focused.
@@ -201,7 +221,68 @@ namespace VampireCrawlersFarmBot
         [DllImport("user32.dll")]
         private static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
 
+        [DllImport("user32.dll")]
+        private static extern bool SetCursorPos(int x, int y);
+
+        [DllImport("user32.dll")]
+        private static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint dwData, UIntPtr dwExtraInfo);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr GetForegroundWindow();
+
+        [DllImport("user32.dll")]
+        private static extern bool ClientToScreen(IntPtr hWnd, ref POINT lpPoint);
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct POINT
+        {
+            public int X;
+            public int Y;
+        }
+
         private const uint KEYEVENTF_KEYUP = 0x0002;
+        private const uint MOUSEEVENTF_LEFTDOWN = 0x0002;
+        private const uint MOUSEEVENTF_LEFTUP = 0x0004;
+
+        internal bool ClickGameObjectOs(GameObject go, string label = "")
+        {
+            if (go == null) { BotLogger.Warn($"ClickGameObjectOs: null ({label})"); return false; }
+            var rect = go.GetComponent<RectTransform>();
+            if (rect == null) { BotLogger.Warn($"ClickGameObjectOs: no RectTransform ({label})"); return false; }
+
+            try
+            {
+                Camera cam = null;
+                var canvas = go.GetComponentInParent<Canvas>();
+                if (canvas != null && canvas.renderMode != RenderMode.ScreenSpaceOverlay)
+                    cam = canvas.worldCamera;
+
+                var screen = RectTransformUtility.WorldToScreenPoint(cam, rect.TransformPoint(rect.rect.center));
+                var clientPoint = new POINT
+                {
+                    X = Mathf.RoundToInt(screen.x),
+                    Y = Mathf.RoundToInt(Screen.height - screen.y)
+                };
+                var point = clientPoint;
+
+                var hwnd = GetForegroundWindow();
+                var converted = hwnd != IntPtr.Zero && ClientToScreen(hwnd, ref point);
+
+                BotLogger.Info(
+                    $"ClickOS: {label} -> {BuildPath(go.transform)} " +
+                    $"unity=({screen.x:F1},{screen.y:F1}) client=({clientPoint.X},{clientPoint.Y}) " +
+                    $"desktop=({point.X},{point.Y}) screen={Screen.width}x{Screen.height} hwnd=0x{hwnd.ToInt64():X} converted={converted}");
+                SetCursorPos(point.X, point.Y);
+                mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, UIntPtr.Zero);
+                mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, UIntPtr.Zero);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                BotLogger.Error($"ClickGameObjectOs failed ({label})", ex);
+                return false;
+            }
+        }
 
         internal void TapKey(Key key)
         {
@@ -278,6 +359,10 @@ namespace VampireCrawlersFarmBot
 
         internal void PressInteract() => TapKey(BotConfig.ParseKey(BotConfig.Instance.Interact.Value));
         internal void PressEscape()   => TapKey(BotConfig.ParseKey(BotConfig.Instance.OpenMenu.Value));
+        internal void PressEnter()    => TapKey(Key.Enter);
+        internal void PressSpace()    => TapKey(Key.Space);
+        internal void PressUp()       => TapKey(Key.UpArrow);
+        internal void PressDown()     => TapKey(Key.DownArrow);
 
         // Prefer confirmed button names from F11 dumps. Keyword fallback is strict
         // because every movement button starts with "Movement_".

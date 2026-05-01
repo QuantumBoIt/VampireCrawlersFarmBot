@@ -66,7 +66,7 @@ namespace VampireCrawlersFarmBot
             EmergencyStop = cfg.Bind("Hotkeys", "EmergencyStop", "F12", "Immediately disable all bot input.");
 
             WorldName = cfg.Bind("Stage", "WorldName", "乳品厂", "World/area name to select on the world map.");
-            StageName = cfg.Bind("Stage", "StageName", "凝乳厂", "Stage name to enter.");
+            StageName = cfg.Bind("Stage", "StageName", "凝乳厂", "Stage name to enter inside the selected world. Examples: 乳品厂, 牛奶厂, 凝乳厂.");
 
             MaxPathRetries = cfg.Bind("Navigation", "MaxPathRetries", 5, "Re-plan path this many times before giving up.");
             MaxMoveFailCount = cfg.Bind("Navigation", "MaxMoveFailCount", 3, "Consecutive failed moves before marking a direction blocked.");

@@ -37,6 +37,16 @@ namespace VampireCrawlersFarmBot
         private int _pauseOpenAttempts;
         private float _worldMapClickTime;
         private int _worldMapSubmitAttempts;
+        private GameObject _selectedStageButtonGo;
+        private int _selectedStageSlot;
+        private float _selectedStageClickTime;
+        private float _lastStageSubmitTime;
+        private int _stageSubmitAttempts;
+        private int _stageConfirmClickAttempts;
+        private bool _stageSelectedByKeyboard;
+        private int _stageKeyboardTargetDownPresses;
+        private int _stageKeyboardDownPressesSent;
+        private float _villageReturnedAt;
 
         // Current navigation target (chest or exit marker)
         private MapMarker _navTarget;
@@ -174,9 +184,34 @@ namespace VampireCrawlersFarmBot
                 if (state == FarmState.UseNuke)
                 {
                     _nav.ResetRun();
+                    _selectedStageButtonGo = null;
+                    _selectedStageSlot = 0;
+                    _selectedStageClickTime = 0f;
                     _nukeClickTime = 0f;
                     _nukeAttempts = 0;
                 }
+                if (state == FarmState.ToWorldMap)
+                {
+                    _selectedStageButtonGo = null;
+                    _selectedStageSlot = 0;
+                    _selectedStageClickTime = 0f;
+                    _lastStageSubmitTime = 0f;
+                    _stageSubmitAttempts = 0;
+                    _stageConfirmClickAttempts = 0;
+                    _stageSelectedByKeyboard = false;
+                    _stageKeyboardTargetDownPresses = 0;
+                    _stageKeyboardDownPressesSent = 0;
+                }
+                if (state == FarmState.SelectDairyPlant)
+                    _swipeCount = 0;
+                if (state == FarmState.EnterStage)
+                {
+                    _lastStageSubmitTime = 0f;
+                    _stageSubmitAttempts = 0;
+                    _stageConfirmClickAttempts = 0;
+                }
+                if (state == FarmState.WaitVillageReturned)
+                    _villageReturnedAt = 0f;
                 SetWait(BotConfig.Instance.UiWaitMs.Value);
             }
 
@@ -241,8 +276,8 @@ namespace VampireCrawlersFarmBot
         {
             if (_sm.TimedOut(timeout * 5)) { _recovery.EnterRecovery($"SelectDairyPlant timed out"); return; }
             if (!WaitDone()) return;
-            var btn = _game.GetDairyPlantButton();
-            if (btn == null)
+
+            if (!_game.IsStageSelectionPanelVisible())
             {
                 var worldMap = _game.GetWorldMapButton();
                 if (_game.IsInVillage() && worldMap != null && worldMap.interactable)
@@ -282,60 +317,260 @@ namespace VampireCrawlersFarmBot
                 SetWait(BotConfig.Instance.UiWaitMs.Value);
                 return;
             }
-            if (!btn.interactable)
+
+            var targetWorld = BotConfig.Instance.WorldName.Value;
+            if (_game.IsSelectedStage(targetWorld))
             {
-                LogPeriodic("SelectDairyPlant: DairyPlant button visible but not interactable yet...");
+                _swipeCount = 0;
+                _sm.TransitionTo(FarmState.SelectCurdlingFactory, $"World({targetWorld}) selected");
+                return;
+            }
+
+            if (_swipeCount >= Math.Max(BotConfig.Instance.MaxPathRetries.Value * 3, 12))
+            {
+                _recovery.EnterRecovery($"World '{targetWorld}' not selected after max swipes");
+                return;
+            }
+
+            var nextWorldBtn = _game.GetRightSwipeButton();
+            if (nextWorldBtn == null)
+            {
+                LogPeriodic($"SelectDairyPlant: RightSwipe not found while selecting world {targetWorld}...");
                 SetWait(BotConfig.Instance.UiWaitMs.Value);
                 return;
             }
-            if (!_input.ClickButton(btn, "DairyPlant"))
-            {
-                LogPeriodic("SelectDairyPlant: DairyPlant click failed, retrying...");
-                SetWait(BotConfig.Instance.UiWaitMs.Value);
-                return;
-            }
-            _swipeCount = 0;
-            _sm.TransitionTo(FarmState.SelectCurdlingFactory, "DairyPlant clicked");
+
+            _input.ClickButton(nextWorldBtn, $"RightSwipe world #{_swipeCount + 1} toward {targetWorld}");
+            _swipeCount++;
+            SetWait(BotConfig.Instance.UiWaitMs.Value);
         }
 
         private void TickSelectCurdlingFactory(float timeout)
         {
             if (_sm.TimedOut(timeout)) { _recovery.EnterRecovery($"SelectCurdlingFactory timed out"); return; }
             if (!WaitDone()) return;
+            if (_game.IsInDungeon())
+            {
+                _sm.TransitionTo(FarmState.UseNuke, "dungeon scene detected after stage click");
+                return;
+            }
+
             if (!_game.IsDairyPlantPanelVisible()) { BotLogger.Debug("SelectCurdlingFactory: stage panel not visible yet..."); return; }
+
+            var targetStage = BotConfig.Instance.StageName.Value;
+            if (_stageKeyboardTargetDownPresses > 0)
+            {
+                if (_stageKeyboardDownPressesSent < _stageKeyboardTargetDownPresses)
+                {
+                    _stageKeyboardDownPressesSent++;
+                    BotLogger.Info($"StageSelect: keyboard Down {_stageKeyboardDownPressesSent}/{_stageKeyboardTargetDownPresses}");
+                    _input.PressDown();
+                    SetWait(Math.Max(BotConfig.Instance.UiWaitMs.Value / 2, 250));
+                    return;
+                }
+
+                _selectedStageClickTime = Time.realtimeSinceStartup;
+                _stageSelectedByKeyboard = true;
+                SetWait(BotConfig.Instance.UiWaitMs.Value);
+                _sm.TransitionTo(FarmState.EnterStage, $"Stage({targetStage}) selected by keyboard");
+                return;
+            }
+
+            if (!_game.IsSelectedStage(targetStage))
+            {
+                var stageBtn = _game.GetStageButton(targetStage);
+                if (stageBtn != null)
+                {
+                    _selectedStageButtonGo = stageBtn.gameObject;
+                    _selectedStageSlot = GetSubLevelSlot(stageBtn.gameObject);
+                    if (_selectedStageSlot <= 0)
+                    {
+                        LogPeriodic($"SelectCurdlingFactory: Stage({targetStage}) slot unknown, retrying...");
+                        SetWait(BotConfig.Instance.UiWaitMs.Value);
+                        return;
+                    }
+
+                    // The sub-level list keeps keyboard focus on the first row when the
+                    // world opens. Keyboard navigation is more reliable here than
+                    // synthetic RectTransform mouse clicks, because the game highlights
+                    // rows and only enters the highlighted row.
+                    _stageKeyboardTargetDownPresses = Math.Max(0, _selectedStageSlot - 1);
+                    _stageKeyboardDownPressesSent = 0;
+                    BotLogger.Info($"StageSelect: target stage slot = {_selectedStageSlot}; staged keyboard Down presses = {_stageKeyboardTargetDownPresses}");
+                    SetWait(Math.Max(BotConfig.Instance.UiWaitMs.Value / 2, 250));
+                    return;
+                }
+
+                if (_swipeCount >= BotConfig.Instance.MaxPathRetries.Value)
+                {
+                    _recovery.EnterRecovery($"Stage '{targetStage}' not selected after max swipes");
+                    return;
+                }
+
+                var nextStageBtn = _game.GetRightSwipeButton();
+                if (nextStageBtn == null)
+                {
+                    BotLogger.Debug("SelectCurdlingFactory: RightSwipe not found while selecting configured stage...");
+                    return;
+                }
+
+                _input.ClickButton(nextStageBtn, $"RightSwipe stage #{_swipeCount + 1} toward {targetStage}");
+                _swipeCount++;
+                SetWait(BotConfig.Instance.UiWaitMs.Value);
+                return;
+            }
+
             var startBtn = _game.GetStartDungeonButton();
             if (startBtn != null && startBtn.interactable)
             {
                 _sm.TransitionTo(FarmState.EnterStage, "StartDungeonButton ready");
                 return;
             }
-            if (_swipeCount >= BotConfig.Instance.MaxPathRetries.Value)
-            {
-                _recovery.EnterRecovery("StartDungeonButton never interactable after max swipes");
-                return;
-            }
-            var swipeBtn = _game.GetRightSwipeButton();
-            if (swipeBtn == null) { BotLogger.Debug("SelectCurdlingFactory: RightSwipe not found..."); return; }
-            _input.ClickButton(swipeBtn, $"RightSwipe #{_swipeCount + 1}");
-            _swipeCount++;
-            SetWait(BotConfig.Instance.UiWaitMs.Value);
+
+            _sm.TransitionTo(FarmState.EnterStage, $"Stage({targetStage}) already selected");
         }
 
         private void TickEnterStage(float timeout)
         {
             if (_sm.TimedOut(timeout)) { _recovery.EnterRecovery($"EnterStage timed out"); return; }
             if (!WaitDone()) return;
+
+            if (_game.IsInDungeon())
+            {
+                _sm.TransitionTo(FarmState.UseNuke, "dungeon scene detected after stage submit");
+                return;
+            }
+
             var btn = _game.GetStartDungeonButton();
-            if (btn == null || !btn.interactable) { LogPeriodic("EnterStage: StartDungeonButton not ready..."); return; }
-            if (!_input.ClickButton(btn, "StartDungeon")) { LogPeriodic("EnterStage: click failed, retrying..."); return; }
-            _sm.TransitionTo(FarmState.WaitRunLoaded, "StartDungeon clicked");
+            if (btn != null && btn.interactable)
+            {
+                if (!_input.ClickGameObjectFull(btn.gameObject, "StartDungeon") &&
+                    !_input.ClickButton(btn, "StartDungeon"))
+                {
+                    LogPeriodic("EnterStage: StartDungeon click failed, retrying...");
+                    SetWait(BotConfig.Instance.UiWaitMs.Value);
+                    return;
+                }
+                SetWait(BotConfig.Instance.UiWaitMs.Value * 2);
+                _sm.TransitionTo(FarmState.WaitRunLoaded, "StartDungeon clicked");
+                return;
+            }
+
+            if (!_triedSubmit)
+            {
+                var targetStage = BotConfig.Instance.StageName.Value;
+                if (_selectedStageButtonGo == null)
+                {
+                    var stageBtn = _game.GetStageButton(targetStage);
+                    if (stageBtn != null)
+                    {
+                        _selectedStageButtonGo = stageBtn.gameObject;
+                        _selectedStageSlot = GetSubLevelSlot(stageBtn.gameObject);
+                    }
+                }
+
+                if (_selectedStageSlot > 0)
+                {
+                    BotLogger.Info(
+                        _stageSelectedByKeyboard
+                            ? $"EnterStage: confirming keyboard-selected stage slot {_selectedStageSlot}"
+                            : $"EnterStage: confirming selected stage slot {_selectedStageSlot}");
+                    SubmitSelectedStage(targetStage, clickTarget: !_stageSelectedByKeyboard);
+                    _triedSubmit = true;
+                    SetWait(BotConfig.Instance.UiWaitMs.Value * 2);
+                    _sm.TransitionTo(FarmState.WaitRunLoaded, $"stage slot {_selectedStageSlot} enter sent");
+                }
+                else
+                {
+                    BotLogger.Warn("EnterStage: target stage slot unknown; refusing blind Enter");
+                    SetWait(BotConfig.Instance.UiWaitMs.Value);
+                }
+                return;
+            }
+
+            LogPeriodic("EnterStage: waiting for dungeon after stage submit...");
+            SetWait(BotConfig.Instance.UiWaitMs.Value);
         }
 
         private void TickWaitRunLoaded(float timeout)
         {
             if (_sm.TimedOut(timeout)) { _recovery.EnterRecovery($"WaitRunLoaded timed out"); return; }
             if (_game.IsInDungeon()) { _sm.TransitionTo(FarmState.UseNuke, "dungeon scene detected"); return; }
+            if (_game.IsStageSelectionPanelVisible() &&
+                Time.realtimeSinceStartup - _lastStageSubmitTime > 1.2f &&
+                _stageSubmitAttempts < Math.Max(BotConfig.Instance.MaxPathRetries.Value * 4, 16))
+            {
+                var targetStage = BotConfig.Instance.StageName.Value;
+                var elapsedSinceStageClick = _selectedStageClickTime > 0f
+                    ? Time.realtimeSinceStartup - _selectedStageClickTime
+                    : 0f;
+                var nextRealClickAt = 2.0f + Math.Max(0, _stageConfirmClickAttempts - 1) * 2.0f;
+                var retryClick =
+                    !_stageSelectedByKeyboard &&
+                    _stageConfirmClickAttempts < Math.Max(BotConfig.Instance.MaxPathRetries.Value, 5) &&
+                    _selectedStageClickTime > 0f &&
+                    elapsedSinceStageClick > nextRealClickAt;
+                BotLogger.Info(
+                    retryClick
+                        ? $"WaitRunLoaded: still in level select, retrying delayed stage click #{_stageConfirmClickAttempts + 1}"
+                        : $"WaitRunLoaded: still in level select, retrying stage submit #{_stageSubmitAttempts + 1}");
+                SubmitSelectedStage(targetStage, clickTarget: retryClick);
+                SetWait(Math.Max(BotConfig.Instance.UiWaitMs.Value, 800));
+                return;
+            }
             BotLogger.Debug("WaitRunLoaded: waiting for SC_Game...");
+        }
+
+        private void SubmitSelectedStage(string targetStage, bool clickTarget)
+        {
+            if (_stageSelectedByKeyboard)
+            {
+                BotLogger.Info($"StageSelect: submitting keyboard-selected stage '{targetStage}'");
+                _input.SubmitCurrentSelection();
+                _input.PressEnter();
+                _input.PressSpace();
+                _lastStageSubmitTime = Time.realtimeSinceStartup;
+                _stageSubmitAttempts++;
+                return;
+            }
+
+            if (_selectedStageButtonGo == null)
+            {
+                var stageBtn = _game.GetStageButton(targetStage);
+                if (stageBtn != null)
+                {
+                    _selectedStageButtonGo = stageBtn.gameObject;
+                    _selectedStageSlot = GetSubLevelSlot(stageBtn.gameObject);
+                    _selectedStageClickTime = Time.realtimeSinceStartup;
+                }
+            }
+
+            if (clickTarget && _selectedStageButtonGo != null)
+            {
+                _stageConfirmClickAttempts++;
+                var stageRoot = GetSubLevelRoot(_selectedStageButtonGo);
+                if (stageRoot != null)
+                {
+                    _input.ClickGameObjectOs(stageRoot, $"StageRootSubmit({targetStage})");
+                    _input.SubmitGameObject(stageRoot, $"StageRootSubmit({targetStage})");
+                }
+
+                _input.ClickGameObjectOs(_selectedStageButtonGo, $"StageSubmit({targetStage})");
+                _input.SubmitGameObject(_selectedStageButtonGo, $"StageSubmit({targetStage})");
+            }
+            else if (_selectedStageButtonGo != null)
+            {
+                var stageRoot = GetSubLevelRoot(_selectedStageButtonGo);
+                if (stageRoot != null)
+                    _input.SubmitGameObject(stageRoot, $"StageRootConfirm({targetStage})");
+                _input.SubmitGameObject(_selectedStageButtonGo, $"StageConfirm({targetStage})");
+            }
+
+            _input.SubmitCurrentSelection();
+            _input.PressEnter();
+            _input.PressSpace();
+            _lastStageSubmitTime = Time.realtimeSinceStartup;
+            _stageSubmitAttempts++;
         }
 
         // ── Phase 3: Dungeon — entry ─────────────────────────────────────────
@@ -1171,6 +1406,21 @@ namespace VampireCrawlersFarmBot
             if (_sm.TimedOut(timeout)) { _recovery.EnterRecovery("WaitVillageReturned timed out"); return; }
             if (_game.IsInVillage())
             {
+                if (_villageReturnedAt <= 0f)
+                {
+                    _villageReturnedAt = Time.realtimeSinceStartup;
+                    BotLogger.Info("WaitVillageReturned: village scene detected; waiting for town UI to settle before next loop.");
+                    SetWait(Math.Max(BotConfig.Instance.UiWaitMs.Value, 1000));
+                    return;
+                }
+
+                if (Time.realtimeSinceStartup - _villageReturnedAt < 2.5f)
+                {
+                    LogPeriodic("WaitVillageReturned: settling town UI before next loop...");
+                    SetWait(500);
+                    return;
+                }
+
                 if (BotConfig.Instance.LoopRuns.Value)
                 {
                     _sm.TransitionTo(FarmState.ToWorldMap, "back in village; starting next loop");
@@ -1319,6 +1569,31 @@ namespace VampireCrawlersFarmBot
             if (Time.realtimeSinceStartup - _lastLogTime < 2f) return;
             _lastLogTime = Time.realtimeSinceStartup;
             BotLogger.Info(msg);
+        }
+
+        private static int GetSubLevelSlot(GameObject go)
+        {
+            for (var t = go == null ? null : go.transform; t != null; t = t.parent)
+            {
+                var name = t.name;
+                var open = name.LastIndexOf('(');
+                var close = name.LastIndexOf(')');
+                if (open < 0 || close <= open) continue;
+                var inside = name.Substring(open + 1, close - open - 1);
+                if (int.TryParse(inside, out var slot) && slot > 0)
+                    return slot;
+            }
+            return 0;
+        }
+
+        private static GameObject GetSubLevelRoot(GameObject go)
+        {
+            for (var t = go == null ? null : go.transform; t != null; t = t.parent)
+            {
+                if (t.name.StartsWith("UI_MapLocations_SubLevelInfo", StringComparison.Ordinal))
+                    return t.gameObject;
+            }
+            return null;
         }
 
     }
