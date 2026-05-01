@@ -127,7 +127,7 @@ namespace VampireCrawlersFarmBot
                 _enabled = !_enabled;
                 _sm.TransitionTo(_enabled ? FarmState.ToWorldMap : FarmState.Disabled,
                                  _enabled ? "toggled on" : "toggled off");
-                BotLogger.Info($"FarmBot enabled = {_enabled}");
+                BotLogger.Essential($"FarmBot enabled = {_enabled}");
             }
 
             if (KeyPressed(cfg.DumpScene.Value))
@@ -159,7 +159,7 @@ namespace VampireCrawlersFarmBot
             {
                 _enabled = false;
                 _sm.TransitionTo(FarmState.Disabled, "emergency stop");
-                BotLogger.Info("FarmBot emergency stopped.");
+                BotLogger.Essential("FarmBot emergency stopped.");
             }
         }
 

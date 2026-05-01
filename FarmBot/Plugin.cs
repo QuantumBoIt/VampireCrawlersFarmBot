@@ -10,7 +10,7 @@ namespace VampireCrawlersFarmBot
         {
             BotLogger.Init(Log);
             _ = new BotConfig(Config);
-            BotLogger.Info($"FarmBot loaded. Version: {PluginInfo.PLUGIN_VERSION}");
+            BotLogger.Essential($"FarmBot loaded. Version: {PluginInfo.PLUGIN_VERSION}");
             AddComponent<FarmBotRunner>();
         }
     }
