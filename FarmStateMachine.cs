@@ -33,7 +33,9 @@ namespace VampireCrawlersFarmBot
         EnterExit,
 
         // Post-stage
-        OpenExitMenu,
+        WaitNextFloorLoaded,
+        OpenPauseMenu,
+        ClickPauseExitGame,
         ConfirmExitToVillage,
         CloseGameOver,
         CloseBattleStats,

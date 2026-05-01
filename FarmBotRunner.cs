@@ -33,6 +33,8 @@ namespace VampireCrawlersFarmBot
         private bool _triedSubmit;
         private float _nukeClickTime;
         private int _nukeAttempts;
+        private float _exitTriggeredTime;
+        private int _pauseOpenAttempts;
 
         // Current navigation target (chest or exit marker)
         private MapMarker _navTarget;
@@ -50,6 +52,8 @@ namespace VampireCrawlersFarmBot
         private LocalScanPhase _localScanPhase;
         private GridPos _localScanOrigin;
         private CardinalDir _localScanProbeDir;
+        private GridPos _exitScanTarget;
+        private bool _hasExitScanTarget;
 
         // How close (world units) the player must be to interact with a target.
         // Approximate; depends on the game's tile size. Calibrate after a dump.
@@ -162,6 +166,9 @@ namespace VampireCrawlersFarmBot
                 _navMovePending = false;
                 _localScanAttempts = 0;
                 _localScanPhase = LocalScanPhase.ReadyToProbe;
+                _hasExitScanTarget = false;
+                if (state == FarmState.OpenPauseMenu)
+                    _pauseOpenAttempts = 0;
                 if (state == FarmState.UseNuke)
                 {
                     _nukeClickTime = 0f;
@@ -196,7 +203,9 @@ namespace VampireCrawlersFarmBot
                 case FarmState.NavigateToExit:        TickNavigateToExit(timeout * 5);           break;
                 case FarmState.LocalScanExit:         TickLocalScanExit(timeout);                break;
                 case FarmState.EnterExit:             TickEnterExit(timeout);                    break;
-                case FarmState.OpenExitMenu:          TickOpenExitMenu(timeout);                 break;
+                case FarmState.WaitNextFloorLoaded:   TickWaitNextFloorLoaded(timeout * 3);      break;
+                case FarmState.OpenPauseMenu:         TickOpenPauseMenu(timeout);                break;
+                case FarmState.ClickPauseExitGame:    TickClickPauseExitGame(timeout);           break;
                 case FarmState.ConfirmExitToVillage:  TickConfirmExitToVillage(timeout);         break;
                 case FarmState.CloseGameOver:         TickCloseGameOver(timeout);                break;
                 case FarmState.CloseBattleStats:      TickCloseBattleStats(timeout);             break;
@@ -762,7 +771,22 @@ namespace VampireCrawlersFarmBot
             var snapshot = _map.ReadMinimapSnapshot();
             if (snapshot.IsValid)
             {
+                var previousExit = _nav.CurrentMap.Exit;
+                bool pendingMoveIntoExit =
+                    _navMovePending &&
+                    previousExit != null &&
+                    _navMoveTo.Equals(previousExit.Pos);
+
                 _nav.LoadMinimap(snapshot);
+
+                if (pendingMoveIntoExit && snapshot.Exit == null)
+                {
+                    BotLogger.Info($"NavigateToExit: exit marker {previousExit.Pos} disappeared after moving from {_navMoveFrom} toward {_navMoveTo}; treating exit as triggered");
+                    _navMovePending = false;
+                    _sm.TransitionTo(FarmState.EnterExit, "exit marker disappeared during navigation");
+                    return;
+                }
+
                 if (_nav.CurrentMap.Exit != null)
                 {
                     if (snapshot.Player.Equals(_nav.CurrentMap.Exit.Pos))
@@ -802,6 +826,12 @@ namespace VampireCrawlersFarmBot
             var snapshot = _map.ReadMinimapSnapshot();
             if (!snapshot.IsValid)
             {
+                if (_localScanPhase == LocalScanPhase.WaitingForProbeResult)
+                {
+                    _sm.TransitionTo(FarmState.EnterExit, $"minimap disappeared after probing {_localScanProbeDir}");
+                    return;
+                }
+
                 LogPeriodic("LocalScanExit: minimap snapshot unavailable");
                 SetWait(BotConfig.Instance.UiWaitMs.Value);
                 return;
@@ -812,6 +842,13 @@ namespace VampireCrawlersFarmBot
                 if (_game.IsExitMenuVisible())
                 {
                     _sm.TransitionTo(FarmState.EnterExit, $"exit triggered by probing {_localScanProbeDir}");
+                    return;
+                }
+
+                if (_hasExitScanTarget && !SnapshotHasExitAt(snapshot, _exitScanTarget))
+                {
+                    BotLogger.Info($"LocalScanExit: exit marker {_exitScanTarget} disappeared after probing {_localScanProbeDir}; treating exit as triggered");
+                    _sm.TransitionTo(FarmState.EnterExit, "exit marker disappeared after probe");
                     return;
                 }
 
@@ -838,6 +875,14 @@ namespace VampireCrawlersFarmBot
             }
 
             _localScanOrigin = snapshot.Player;
+            if (!_hasExitScanTarget)
+            {
+                var exit = snapshot.Exit ?? _nav.CurrentMap.Exit;
+                _exitScanTarget = exit == null ? snapshot.Player : exit.Pos;
+                _hasExitScanTarget = true;
+                BotLogger.Info($"LocalScanExit: tracking exit marker at {_exitScanTarget}");
+            }
+
             var player = _game.GetPlayerTransform();
             if (player == null)
             {
@@ -852,50 +897,167 @@ namespace VampireCrawlersFarmBot
             SetWait(Math.Max(BotConfig.Instance.MoveWaitMs.Value, BotConfig.Instance.UiWaitMs.Value));
         }
 
-        // Click ExitToVillageButton.
+        // Exit boundary was triggered. From here, wait for the next floor or a
+        // completion modal, then leave through the pause menu so rewards settle.
         private void TickEnterExit(float timeout)
         {
             if (_sm.TimedOut(timeout)) { _recovery.EnterRecovery("EnterExit timed out"); return; }
             if (!WaitDone()) return;
 
-            var btn = _game.GetExitToVillageButton();
-            if (btn == null) { LogPeriodic("EnterExit: waiting for ExitToVillageButton..."); return; }
-            _input.ClickButton(btn, "ExitToVillage");
-            SetWait(BotConfig.Instance.UiWaitMs.Value);
-            _sm.TransitionTo(FarmState.OpenExitMenu, "ExitToVillage clicked");
+            _exitTriggeredTime = Time.realtimeSinceStartup;
+            _sm.TransitionTo(FarmState.WaitNextFloorLoaded, "exit boundary triggered");
         }
 
-        // Wait for any confirmation dialog after clicking ExitToVillage.
-        private void TickOpenExitMenu(float timeout)
+        private void TickWaitNextFloorLoaded(float timeout)
         {
-            if (_sm.TimedOut(timeout)) { _sm.TransitionTo(FarmState.ConfirmExitToVillage, "OpenExitMenu timed out"); return; }
-            if (!WaitDone()) return;
-            // If exit button disappeared, the exit was confirmed — advance.
-            if (!_game.IsExitMenuVisible())
+            if (_sm.TimedOut(timeout))
             {
-                _sm.TransitionTo(FarmState.ConfirmExitToVillage, "exit menu closed");
+                BotLogger.Warn("WaitNextFloorLoaded timed out; opening pause menu anyway");
+                _sm.TransitionTo(FarmState.OpenPauseMenu, "next floor wait timed out");
                 return;
             }
-            // Still showing — click the button again or submit current selection.
-            if (!_triedSubmit)
+            if (!WaitDone()) return;
+
+            if (Time.realtimeSinceStartup - _exitTriggeredTime < 2f)
             {
-                _triedSubmit = true;
-                _input.SubmitCurrentSelection();
+                LogPeriodic("WaitNextFloorLoaded: waiting for floor transition to settle...");
                 SetWait(BotConfig.Instance.UiWaitMs.Value);
+                return;
             }
+
+            if (_game.IsChooseCardModalVisible())
+            {
+                _sm.TransitionTo(FarmState.ResolveLevelUps, "level-up modal after floor transition");
+                return;
+            }
+
+            if (_game.IsInDungeon())
+            {
+                var snapshot = _map.ReadMinimapSnapshot();
+                if (snapshot.IsValid || _game.GetMinimapTransform() != null)
+                {
+                    _sm.TransitionTo(FarmState.OpenPauseMenu, "next floor dungeon UI detected");
+                    return;
+                }
+            }
+
+            if (_game.GetExitToVillageButton() != null)
+            {
+                _sm.TransitionTo(FarmState.OpenPauseMenu, "completion/exit modal visible");
+                return;
+            }
+
+            LogPeriodic("WaitNextFloorLoaded: waiting for next floor UI...");
+            SetWait(BotConfig.Instance.UiWaitMs.Value);
         }
 
-        // Wait for the scene to switch away from SC_Game, then advance.
+        private void TickOpenPauseMenu(float timeout)
+        {
+            if (_sm.TimedOut(timeout)) { _recovery.EnterRecovery("OpenPauseMenu timed out"); return; }
+            if (!WaitDone()) return;
+
+            if (_game.IsPauseMenuVisible())
+            {
+                _sm.TransitionTo(FarmState.ClickPauseExitGame, "pause menu visible");
+                return;
+            }
+
+            if (_pauseOpenAttempts < 8)
+            {
+                _pauseOpenAttempts++;
+                var pauseGo = _game.GetPauseButtonObject();
+                if (pauseGo != null)
+                {
+                    _input.ClickGameObjectFull(pauseGo, $"HudPause attempt #{_pauseOpenAttempts}");
+                }
+                else
+                {
+                    var pauseBtn = _game.GetPauseButton();
+                    if (pauseBtn != null)
+                        _input.ClickButton(pauseBtn, $"HudPause attempt #{_pauseOpenAttempts}");
+                    else
+                    {
+                        BotLogger.Info($"OpenPauseMenu: pause button not found; pressing Escape attempt #{_pauseOpenAttempts}");
+                        _input.PressEscape();
+                    }
+                }
+
+                if (_pauseOpenAttempts >= 3)
+                {
+                    BotLogger.Info($"OpenPauseMenu: also pressing Escape attempt #{_pauseOpenAttempts}");
+                    _input.PressEscape();
+                }
+
+                SetWait(BotConfig.Instance.UiWaitMs.Value);
+                return;
+            }
+
+            LogPeriodic("OpenPauseMenu: waiting for pause menu...");
+            SetWait(BotConfig.Instance.UiWaitMs.Value);
+        }
+
+        private void TickClickPauseExitGame(float timeout)
+        {
+            if (_sm.TimedOut(timeout)) { _recovery.EnterRecovery("ClickPauseExitGame timed out"); return; }
+            if (!WaitDone()) return;
+
+            var btn = _game.GetPauseExitGameButton();
+            if (btn == null)
+            {
+                LogPeriodic("ClickPauseExitGame: waiting for pause exit button...");
+                SetWait(BotConfig.Instance.UiWaitMs.Value);
+                return;
+            }
+
+            _input.ClickButton(btn, "PauseAbortRun");
+            SetWait(BotConfig.Instance.UiWaitMs.Value);
+            _sm.TransitionTo(FarmState.ConfirmExitToVillage, "pause exit clicked");
+        }
+
         private void TickConfirmExitToVillage(float timeout)
         {
             if (_sm.TimedOut(timeout)) { _recovery.EnterRecovery("ConfirmExitToVillage timed out"); return; }
             if (!WaitDone()) return;
-            if (!_game.IsInDungeon())
+
+            if (_game.IsGameOverVisible())
             {
-                _sm.TransitionTo(FarmState.CloseGameOver, "left dungeon scene");
+                _sm.TransitionTo(FarmState.CloseGameOver, "results summary visible");
                 return;
             }
-            LogPeriodic("ConfirmExitToVillage: waiting to leave SC_Game...");
+
+            if (_game.IsInVillage())
+            {
+                _sm.TransitionTo(FarmState.WaitVillageReturned, "already in village");
+                return;
+            }
+
+            if (_triedSubmit)
+            {
+                LogPeriodic("ConfirmExitToVillage: confirmation clicked; waiting for results summary, battle stats, or village...");
+                SetWait(BotConfig.Instance.UiWaitMs.Value);
+                return;
+            }
+
+            var yes = _game.GetYesButton();
+            if (yes != null)
+            {
+                _triedSubmit = true;
+                _input.ClickButton(yes, "ConfirmExitYes");
+                SetWait(BotConfig.Instance.UiWaitMs.Value * 4);
+                return;
+            }
+
+            var yesGo = _game.GetYesButtonObject();
+            if (yesGo != null)
+            {
+                _triedSubmit = true;
+                _input.ClickGameObjectFull(yesGo, "ConfirmExitYes");
+                SetWait(BotConfig.Instance.UiWaitMs.Value * 4);
+                return;
+            }
+
+            LogPeriodic("ConfirmExitToVillage: waiting for Yes dialog or results summary...");
+            SetWait(BotConfig.Instance.UiWaitMs.Value);
         }
 
         // ── Phase 6: Post-run cleanup ─────────────────────────────────────────
@@ -907,20 +1069,31 @@ namespace VampireCrawlersFarmBot
             if (!WaitDone()) return;
             if (_game.IsInVillage()) { _sm.TransitionTo(FarmState.WaitVillageReturned, "already in village"); return; }
 
+            if (_game.IsBattleStatsVisible())
+            {
+                _sm.TransitionTo(FarmState.CloseBattleStats, "battle/achievement summary visible");
+                return;
+            }
+
+            var endGameBtn = _game.GetEndGameButton();
+            if (endGameBtn != null)
+            {
+                _input.ClickButton(endGameBtn, "CloseEndGameScreen");
+                SetWait(BotConfig.Instance.UiWaitMs.Value * 2);
+                return;
+            }
+
             var btn = _game.GetCloseGameOverButton();
             if (btn != null)
             {
                 _input.ClickButton(btn, "CloseGameOver");
                 SetWait(BotConfig.Instance.UiWaitMs.Value);
+                _sm.TransitionTo(FarmState.CloseBattleStats, "results summary closed");
+                return;
             }
-            // TODO: add proper game-over screen detection from F9 dump
-            if (!_triedSubmit)
-            {
-                _triedSubmit = true;
-                _input.SubmitCurrentSelection();
-                SetWait(BotConfig.Instance.UiWaitMs.Value);
-            }
-            if (_sm.TimedOut(3f)) _sm.TransitionTo(FarmState.CloseBattleStats, "CloseGameOver: advancing");
+
+            LogPeriodic("CloseGameOver: waiting for ResultsSummaryModal QuitButton...");
+            SetWait(BotConfig.Instance.UiWaitMs.Value);
         }
 
         private void TickCloseBattleStats(float timeout)
@@ -934,14 +1107,12 @@ namespace VampireCrawlersFarmBot
             {
                 _input.ClickButton(btn, "CloseBattleStats");
                 SetWait(BotConfig.Instance.UiWaitMs.Value);
+                _sm.TransitionTo(FarmState.WaitVillageReturned, "battle/achievement summary closed");
+                return;
             }
-            // TODO: add battle-stats detection from F9 dump
-            if (!_triedSubmit)
-            {
-                _triedSubmit = true;
-                _input.SubmitCurrentSelection();
-                SetWait(BotConfig.Instance.UiWaitMs.Value);
-            }
+
+            LogPeriodic("CloseBattleStats: waiting for AchievementSummaryModal QuitButton or village...");
+            SetWait(BotConfig.Instance.UiWaitMs.Value);
         }
 
         private void TickWaitVillageReturned(float timeout)
@@ -949,9 +1120,17 @@ namespace VampireCrawlersFarmBot
             if (_sm.TimedOut(timeout)) { _recovery.EnterRecovery("WaitVillageReturned timed out"); return; }
             if (_game.IsInVillage())
             {
-                _enabled = false;
-                _sm.TransitionTo(FarmState.Disabled, "back in village after one run");
-                BotLogger.Info("FarmBot single-run mode complete; bot disabled.");
+                if (BotConfig.Instance.LoopRuns.Value)
+                {
+                    _sm.TransitionTo(FarmState.ToWorldMap, "back in village; starting next loop");
+                    BotLogger.Info("FarmBot loop complete; starting next run.");
+                }
+                else
+                {
+                    _enabled = false;
+                    _sm.TransitionTo(FarmState.Disabled, "back in village after one run");
+                    BotLogger.Info("FarmBot single-run mode complete; bot disabled.");
+                }
                 return;
             }
             LogPeriodic("WaitVillageReturned: waiting for SC_TownMap...");
@@ -1065,6 +1244,9 @@ namespace VampireCrawlersFarmBot
                 if (chest.Pos.Equals(pos)) return true;
             return false;
         }
+
+        private static bool SnapshotHasExitAt(MapSnapshot snapshot, GridPos pos)
+            => snapshot.Exit != null && snapshot.Exit.Pos.Equals(pos);
 
         private void AdvanceLocalScanDirection(string label)
         {

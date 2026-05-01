@@ -40,6 +40,18 @@ namespace VampireCrawlersFarmBot
             "MessageBoxManager/Canvas/Message - Border/Buttons/YesButton/_YesButton";
         private const string PathNoBtn =
             "MessageBoxManager/Canvas/Message - Border/Buttons/NoButton/_NoButton";
+        private const string PathPauseExitGameBtn =
+            "PauseMenuModal/Canvas/GameOptions PauseMenu/PauseFunctionalButtons/_ExitGameButton";
+        private const string PathPauseAbortRunBtn =
+            "PauseMenuModal/Canvas/GameOptions PauseMenu/PauseFunctionalButtons/_AbortRunButton";
+        private const string PathPauseBtn =
+            "CardGame/Player/EdgeCanvas/PauseButton";
+        private const string PathResultsQuitBtn =
+            "CardGame/ResultsSummaryModal/Canvas/QuitButton/_QuitButton";
+        private const string PathAchievementQuitBtn =
+            "CardGame/AchievementSummaryModal/Canvas/QuitButton/_QuitButton";
+        private const string PathEndGameBtn =
+            "CardGame/Player/Canvas/EndGameButtons/EndGameButton/_EndGameButton";
 
         // ── Scene ────────────────────────────────────────────────────────────
 
@@ -77,6 +89,15 @@ namespace VampireCrawlersFarmBot
         internal Button GetLeftSwipeButton()    => FindButton(PathLeftSwipeBtn);
         internal Button GetYesButton()          => FindButton(PathYesBtn);
         internal Button GetNoButton()           => FindButton(PathNoBtn);
+        internal GameObject GetYesButtonObject() => FindActiveObject(PathYesBtn) ?? FindActiveObjectByPathHints("messageboxmanager", "yesbutton");
+        internal Button GetPauseButton() => FindActiveButton(PathPauseBtn) ?? FindActiveButtonByPathHints("edgecanvas", "pausebutton");
+        internal GameObject GetPauseButtonObject() => FindActiveObject(PathPauseBtn) ?? FindActiveObjectByPathHints("edgecanvas", "pausebutton");
+        internal Button GetPauseExitGameButton() =>
+            FindActiveButton(PathPauseAbortRunBtn) ??
+            FindActiveButtonByPathHints("pause", "abortrun") ??
+            FindActiveButton(PathPauseExitGameBtn) ??
+            FindActiveButtonByPathHints("pause", "exitgame");
+        internal bool IsPauseMenuVisible() => GetPauseExitGameButton() != null;
 
         // ── Dungeon: level-up card modal ─────────────────────────────────────
 
@@ -363,7 +384,7 @@ namespace VampireCrawlersFarmBot
         private const string PathExitToVillageBtn =
             "CardGame/EndOfDemoModal/Canvas/Container/ExitToVillageButton/_ExitToVillageButton";
 
-        internal Button GetExitToVillageButton() => FindButton(PathExitToVillageBtn);
+        internal Button GetExitToVillageButton() => FindActiveButton(PathExitToVillageBtn);
         internal bool IsExitMenuVisible()        => GetExitToVillageButton() != null;
 
         // ── Dungeon: nuke ────────────────────────────────────────────────────
@@ -437,12 +458,36 @@ namespace VampireCrawlersFarmBot
         internal Transform GetPlayerTransform()
             => GameObject.Find("DungeonPlayer")?.transform ?? GameObject.Find("CardGame/Player")?.transform;
 
-        // ── Dungeon: post-run screens (paths TBD — need in-dungeon F9 dump) ──
+        // ── Dungeon: post-run screens ──
 
-        internal bool IsGameOverVisible()         => false; // TODO
-        internal bool IsBattleStatsVisible()      => false; // TODO
-        internal Button GetCloseGameOverButton()  => null;  // TODO
-        internal Button GetCloseBattleStatsButton() => null; // TODO
+        internal bool IsGameOverVisible()
+        {
+            var results = GameObject.Find("CardGame/ResultsSummaryModal/Canvas");
+            if (results != null && results.activeInHierarchy) return true;
+
+            var endGame = GameObject.Find(PathEndGameBtn);
+            if (endGame != null && endGame.activeInHierarchy) return true;
+
+            var oldScreen = GameObject.Find("CardGame/Player/Canvas/RenderTextureWindow/BackgroundTextureCanvas/GameOverScreen");
+            return oldScreen != null && oldScreen.activeInHierarchy;
+        }
+
+        internal bool IsBattleStatsVisible()
+        {
+            var go = GameObject.Find("CardGame/AchievementSummaryModal/Canvas");
+            return go != null && go.activeInHierarchy;
+        }
+
+        internal Button GetCloseGameOverButton()
+            => FindActiveButton(PathResultsQuitBtn) ??
+               FindActiveButtonByPathHints("resultssummarymodal", "quitbutton");
+
+        internal Button GetEndGameButton()
+            => FindActiveButton(PathEndGameBtn) ??
+               FindActiveButtonByPathHints("endgamebuttons", "endgamebutton");
+
+        internal Button GetCloseBattleStatsButton()
+            => FindActiveButton(PathAchievementQuitBtn) ?? FindActiveButtonByPathHints("achievementsummarymodal", "quitbutton");
 
         // ── Minimap ──────────────────────────────────────────────────────────────
 
@@ -494,6 +539,59 @@ namespace VampireCrawlersFarmBot
             var go = GameObject.Find(path);
             if (go == null) return null;
             return go.GetComponent<Button>();
+        }
+
+        private static Button FindActiveButton(string path)
+        {
+            var go = GameObject.Find(path);
+            if (go == null || !go.activeInHierarchy) return null;
+            return go.GetComponent<Button>();
+        }
+
+        private static GameObject FindActiveObject(string path)
+        {
+            var go = GameObject.Find(path);
+            return go != null && go.activeInHierarchy ? go : null;
+        }
+
+        private static Button FindActiveButtonByPathHints(params string[] hints)
+        {
+            foreach (var btn in UnityEngine.Object.FindObjectsOfType<Button>(true))
+            {
+                if (btn == null || !btn.interactable || !btn.gameObject.activeInHierarchy) continue;
+                var lower = BuildPath(btn.transform).ToLowerInvariant();
+                bool all = true;
+                foreach (var hint in hints)
+                {
+                    if (!lower.Contains(hint))
+                    {
+                        all = false;
+                        break;
+                    }
+                }
+                if (all) return btn;
+            }
+            return null;
+        }
+
+        private static GameObject FindActiveObjectByPathHints(params string[] hints)
+        {
+            foreach (var go in UnityEngine.Object.FindObjectsOfType<GameObject>(true))
+            {
+                if (go == null || !go.activeInHierarchy) continue;
+                var lower = BuildPath(go.transform).ToLowerInvariant();
+                bool all = true;
+                foreach (var hint in hints)
+                {
+                    if (!lower.Contains(hint))
+                    {
+                        all = false;
+                        break;
+                    }
+                }
+                if (all) return go;
+            }
+            return null;
         }
     }
 }
