@@ -6,12 +6,12 @@ Earlier development used separate helper mods as reference code. They are no lon
 
 ## Current Capabilities
 
-The FarmBot currently supports the Dairy Plant / Curdling Factory farming route:
+The FarmBot currently supports the configured Dairy Plant route. By default it selects the Dairy Plant world and the Curdling Factory stage.
 
 1. Start from the town map.
 2. Open the world map.
-3. Select Dairy Plant.
-4. Select Curdling Factory.
+3. Select the configured world, currently Dairy Plant.
+4. Select the configured stage, default Curdling Factory.
 5. Enter the dungeon.
 6. Click the nuke button.
 7. Resolve level-up card prompts.
@@ -50,7 +50,7 @@ When enabled with `F8`, the bot starts from the current town state and proceeds 
 The generated config file is:
 
 ```text
-<GameRoot>/BepInEx/config/com.gong.vampirecrawlers.farmbot.cfg
+<GameRoot>/BepInEx/config/com.user.vampirecrawlers.farmbot.cfg
 ```
 
 Important options:
@@ -64,7 +64,7 @@ Important options:
 - `Hotkeys.Step`: default `F11`.
 - `Hotkeys.EmergencyStop`: default `F12`.
 - `Stage.WorldName`: configured world name.
-- `Stage.StageName`: configured stage name.
+- `Stage.StageName`: configured stage name inside the selected world. Current known Dairy Plant stages include `乳品厂`, `牛奶厂`, and `凝乳厂`.
 - `Navigation.MaxPathRetries`: retry limit for stage/menu navigation.
 - `Navigation.MaxMoveFailCount`: movement failure threshold.
 - `Timing.UiWaitMs`: delay after UI actions.
@@ -81,7 +81,7 @@ Important options:
 The project targets `.NET 6` and references BepInEx and IL2CPP interop assemblies from the local game installation. The default project file expects:
 
 ```text
-C:\Users\gong\GAME\VampireCrawlers
+C:\Users\xxxx\GAME\VampireCrawlers
 ```
 
 Build from the repository root:
@@ -146,7 +146,11 @@ FarmBot loop complete; starting next run.
 
 ### Menu Flow
 
-`GameObserver` locates known UI paths for the town, world map, Dairy Plant, Curdling Factory, and dungeon start button. `FarmBotRunner` drives those UI objects through a state machine.
+`GameObserver` locates known UI paths for the town, world map, Dairy Plant world, stage selection panel, and dungeon start button. `FarmBotRunner` drives those UI objects through a state machine and waits until the selected stage panel text matches `Stage.StageName` before starting the dungeon.
+
+## TODO
+
+- Generalize world/stage selection beyond the currently observed Dairy Plant UI paths. `Stage.StageName` can switch between known stages in the Dairy Plant world, but `Stage.WorldName` is still backed by the observed WorldMap -> DairyPlant path.
 
 ### Nuke Flow
 
