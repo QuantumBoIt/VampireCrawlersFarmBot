@@ -2,13 +2,7 @@
 
 `VampireCrawlersFarmBot` is a BepInEx IL2CPP mod for Vampire Crawlers. It adds a hotkey-driven farming bot that can enter a configured stage, detonate the dungeon nuke, resolve safe level-up choices, collect chest cash-outs, trigger the floor exit, settle the run through the normal result screens, and loop from town.
 
-The repository also contains three older, unrelated helper mods:
-
-- `MoreInfoMod`
-- `ShowEnemyHpMod`
-- `SortCardMod`
-
-Those mods are kept in the project but are not part of the FarmBot control flow.
+Earlier development used separate helper mods as reference code. They are no longer included in this project, so the built DLL only exposes the FarmBot plugin.
 
 ## Current Capabilities
 

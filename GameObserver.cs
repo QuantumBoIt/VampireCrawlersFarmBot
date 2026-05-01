@@ -1,6 +1,7 @@
 using UnityEngine;
 using UnityEngine.SceneManagement;
 using UnityEngine.UI;
+using TMPro;
 using System;
 using System.Collections.Generic;
 using System.Reflection;
@@ -32,6 +33,8 @@ namespace VampireCrawlersFarmBot
             "LevelSelect/LevelSelectUI/Stages/MapLocationInfo (Dairy Plant)";
         private const string PathStartDungeonBtn =
             "LevelSelect/LevelSelectUI/Stages/MapLocationInfo (Dairy Plant)/StartDungeonButton/_StartDungeonButton";
+        private const string PathTownLocationInfoPanel =
+            "TownViewController/Canvas/CanvasShaker/UI_InfoPanel_TownLocations";
         private const string PathRightSwipeBtn =
             "LevelSelect/LevelSelectUI/Stages/MapLocationInfo (Dairy Plant)/RightSwipe/_button";
         private const string PathLeftSwipeBtn =
@@ -74,6 +77,23 @@ namespace VampireCrawlersFarmBot
             // Root "LevelSelect" GO can be slow to activate after WorldMap click.
             // DairyPlant button existing + active is a more reliable signal.
             return GetDairyPlantButton() != null;
+        }
+
+        internal bool IsTownInfoPanelShowingWorldMap()
+        {
+            var root = GameObject.Find(PathTownLocationInfoPanel);
+            if (root == null || !root.activeInHierarchy) return false;
+
+            var text = ReadTextBlob(root).ToLowerInvariant();
+            bool looksWorldMap =
+                text.Contains("worldmap") ||
+                text.Contains("world map") ||
+                text.Contains("world") && text.Contains("map") ||
+                text.Contains("\u4e16\u754c") && text.Contains("\u5730\u56fe");
+
+            if (!looksWorldMap)
+                BotLogger.Info($"TownInfoPanel: not WorldMap yet, text='{TrimForLog(text)}'");
+            return looksWorldMap;
         }
 
         internal Button GetDairyPlantButton() => FindButton(PathDairyPlantBtn);
@@ -552,6 +572,68 @@ namespace VampireCrawlersFarmBot
         {
             var go = GameObject.Find(path);
             return go != null && go.activeInHierarchy ? go : null;
+        }
+
+        private static string ReadTextBlob(GameObject root)
+        {
+            var sb = new StringBuilder();
+            try
+            {
+                foreach (var text in root.GetComponentsInChildren<Text>(true))
+                {
+                    try
+                    {
+                        if (text != null && !string.IsNullOrEmpty(text.text))
+                            sb.Append(text.text).Append(' ');
+                    }
+                    catch { }
+                }
+
+                foreach (var text in root.GetComponentsInChildren<TMP_Text>(true))
+                {
+                    try
+                    {
+                        if (text != null && !string.IsNullOrEmpty(text.text))
+                            sb.Append(text.text).Append(' ');
+                    }
+                    catch { }
+                }
+
+                foreach (var c in root.GetComponentsInChildren<Component>(true))
+                {
+                    try
+                    {
+                        if (c == null) continue;
+                        var t = c.GetType();
+                        foreach (var name in new[] { "text", "Text", "m_text", "Value", "value" })
+                        {
+                            var prop = t.GetProperty(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                            if (prop != null && prop.PropertyType == typeof(string))
+                            {
+                                var value = prop.GetValue(c) as string;
+                                if (!string.IsNullOrEmpty(value)) sb.Append(value).Append(' ');
+                            }
+
+                            var field = t.GetField(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                            if (field != null && field.FieldType == typeof(string))
+                            {
+                                var value = field.GetValue(c) as string;
+                                if (!string.IsNullOrEmpty(value)) sb.Append(value).Append(' ');
+                            }
+                        }
+                    }
+                    catch { }
+                }
+            }
+            catch { }
+            return sb.ToString();
+        }
+
+        private static string TrimForLog(string value)
+        {
+            if (string.IsNullOrEmpty(value)) return "";
+            value = value.Replace("\r", " ").Replace("\n", " ");
+            return value.Length <= 160 ? value : value.Substring(0, 160);
         }
 
         private static Button FindActiveButtonByPathHints(params string[] hints)

@@ -47,6 +47,21 @@ namespace VampireCrawlersFarmBot
         private readonly HashSet<GridPos> _doneChestPositions = new();
         private readonly HashSet<GridPos> _unreachableChestPositions = new();
 
+        internal void ResetRun()
+        {
+            CurrentMap.PlayerPos = default;
+            CurrentMap.PlayerFacing = default;
+            CurrentMap.Width = 0;
+            CurrentMap.Height = 0;
+            CurrentMap.Chests.Clear();
+            CurrentMap.Exit = null;
+            CurrentMap.BlockedCells.Clear();
+            _blockedEdges.Clear();
+            _doneChestPositions.Clear();
+            _unreachableChestPositions.Clear();
+            BotLogger.Info("Navigator: reset run state");
+        }
+
         internal void LoadMinimap(MapSnapshot snapshot)
         {
             CurrentMap.PlayerPos = snapshot.Player;

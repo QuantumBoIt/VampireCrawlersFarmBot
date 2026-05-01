@@ -135,6 +135,65 @@ namespace VampireCrawlersFarmBot
             }
         }
 
+        internal bool SubmitCurrentSelectionIfPathContains(string requiredHint)
+        {
+            var es = EventSystem.current;
+            if (es == null) { BotLogger.Warn("SubmitCurrentSelectionIfPathContains: no EventSystem"); return false; }
+            var go = es.currentSelectedGameObject;
+            if (go == null) { BotLogger.Warn("SubmitCurrentSelectionIfPathContains: nothing selected"); return false; }
+
+            var path = BuildPath(go.transform);
+            if (string.IsNullOrEmpty(requiredHint) ||
+                !path.ToLowerInvariant().Contains(requiredHint.ToLowerInvariant()))
+            {
+                BotLogger.Warn($"SubmitCurrentSelectionIfPathContains: refusing selected object {path}, missing hint {requiredHint}");
+                return false;
+            }
+
+            BotLogger.Info($"SubmitCurrentSelectionIfPathContains: {path}");
+            try
+            {
+                ExecuteEvents.Execute(go, new BaseEventData(es), ExecuteEvents.submitHandler);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                BotLogger.Error($"SubmitCurrentSelectionIfPathContains failed ({path})", ex);
+                return false;
+            }
+        }
+
+        internal bool SubmitCurrentSelectionIfPathContainsAny(params string[] requiredHints)
+        {
+            var es = EventSystem.current;
+            if (es == null) { BotLogger.Warn("SubmitCurrentSelectionIfPathContainsAny: no EventSystem"); return false; }
+            var go = es.currentSelectedGameObject;
+            if (go == null) { BotLogger.Warn("SubmitCurrentSelectionIfPathContainsAny: nothing selected"); return false; }
+
+            var path = BuildPath(go.transform);
+            var lower = path.ToLowerInvariant();
+            foreach (var hint in requiredHints)
+            {
+                if (!string.IsNullOrEmpty(hint) && lower.Contains(hint.ToLowerInvariant()))
+                {
+                    BotLogger.Info($"SubmitCurrentSelectionIfPathContainsAny: {path}");
+                    try
+                    {
+                        ExecuteEvents.Execute(go, new BaseEventData(es), ExecuteEvents.submitHandler);
+                        return true;
+                    }
+                    catch (Exception ex)
+                    {
+                        BotLogger.Error($"SubmitCurrentSelectionIfPathContainsAny failed ({path})", ex);
+                        return false;
+                    }
+                }
+            }
+
+            BotLogger.Warn($"SubmitCurrentSelectionIfPathContainsAny: refusing selected object {path}");
+            return false;
+        }
+
         // ── Keyboard simulation (Win32 P/Invoke) ────────────────────────────
         // Injects keystrokes at the OS level; Unity's InputSystem reads them
         // normally as long as the game window is focused.

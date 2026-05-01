@@ -35,6 +35,8 @@ namespace VampireCrawlersFarmBot
         private int _nukeAttempts;
         private float _exitTriggeredTime;
         private int _pauseOpenAttempts;
+        private float _worldMapClickTime;
+        private int _worldMapSubmitAttempts;
 
         // Current navigation target (chest or exit marker)
         private MapMarker _navTarget;
@@ -171,6 +173,7 @@ namespace VampireCrawlersFarmBot
                     _pauseOpenAttempts = 0;
                 if (state == FarmState.UseNuke)
                 {
+                    _nav.ResetRun();
                     _nukeClickTime = 0f;
                     _nukeAttempts = 0;
                 }
@@ -227,7 +230,10 @@ namespace VampireCrawlersFarmBot
             if (!_game.IsInVillage()) { BotLogger.Debug("ToWorldMap: not in village yet..."); return; }
             var btn = _game.GetWorldMapButton();
             if (btn == null) { BotLogger.Debug("ToWorldMap: WorldMap button not found yet..."); return; }
-            _input.ClickButton(btn, "WorldMap");
+            if (!_input.ClickGameObjectFull(btn.gameObject, "WorldMap"))
+                _input.ClickButton(btn, "WorldMap");
+            _worldMapClickTime = Time.realtimeSinceStartup;
+            _worldMapSubmitAttempts = 0;
             _sm.TransitionTo(FarmState.SelectDairyPlant, "WorldMap clicked");
         }
 
@@ -238,18 +244,42 @@ namespace VampireCrawlersFarmBot
             var btn = _game.GetDairyPlantButton();
             if (btn == null)
             {
-                if (!_triedSubmit)
+                var worldMap = _game.GetWorldMapButton();
+                if (_game.IsInVillage() && worldMap != null && worldMap.interactable)
                 {
-                    _triedSubmit = true;
-                    BotLogger.Info("SelectDairyPlant: submitting current selection to advance world map");
-                    _input.SubmitCurrentSelection();
+                    if (Time.realtimeSinceStartup - _worldMapClickTime < 1.5f)
+                    {
+                        LogPeriodic("SelectDairyPlant: waiting for WorldMap info panel to settle...");
+                        SetWait(BotConfig.Instance.UiWaitMs.Value);
+                        return;
+                    }
+
+                    if (_worldMapSubmitAttempts == 0 &&
+                        _input.SubmitCurrentSelectionIfPathContains("worldmap"))
+                    {
+                        _worldMapSubmitAttempts++;
+                        SetWait(BotConfig.Instance.UiWaitMs.Value * 2);
+                        return;
+                    }
+
+                    if (_worldMapSubmitAttempts == 0 && _game.IsTownInfoPanelShowingWorldMap() &&
+                        _input.SubmitCurrentSelectionIfPathContains("ui_infopanel_townlocations"))
+                    {
+                        _worldMapSubmitAttempts++;
+                        SetWait(BotConfig.Instance.UiWaitMs.Value * 2);
+                        return;
+                    }
+
+                    BotLogger.Info("SelectDairyPlant: DairyPlant not visible; retrying explicit WorldMap pointer click");
+                    _input.ClickGameObjectFull(worldMap.gameObject, "WorldMap(retry)");
+                    _worldMapClickTime = Time.realtimeSinceStartup;
+                    _worldMapSubmitAttempts = 0;
                     SetWait(BotConfig.Instance.UiWaitMs.Value * 2);
+                    return;
                 }
-                else
-                {
-                    LogPeriodic("SelectDairyPlant: waiting for LevelSelect...");
-                    SetWait(BotConfig.Instance.UiWaitMs.Value);
-                }
+
+                LogPeriodic("SelectDairyPlant: waiting for LevelSelect/DairyPlant button...");
+                SetWait(BotConfig.Instance.UiWaitMs.Value);
                 return;
             }
             if (!btn.interactable)
@@ -599,6 +629,17 @@ namespace VampireCrawlersFarmBot
                 return;
             }
 
+            var path = _nav.PlanPath(snapshot.Player, _navTarget.Pos);
+            if (path.Count == 0)
+            {
+                BotLogger.Warn($"NavigateToChest: target {_navTarget.Label} at {_navTarget.Pos} is unreachable from {snapshot.Player}; selecting another target");
+                _nav.MarkChestUnreachable(_navTarget);
+                _navTarget = null;
+                _navMovePending = false;
+                _sm.TransitionTo(FarmState.SelectNextChest, "current chest target unreachable");
+                return;
+            }
+
             NavigateOneGridStep(snapshot, _navTarget.Pos, "NavigateToChest");
         }
 
@@ -794,6 +835,16 @@ namespace VampireCrawlersFarmBot
                         _sm.TransitionTo(FarmState.LocalScanExit, $"arrived at exit grid {_nav.CurrentMap.Exit.Pos}");
                         return;
                     }
+
+                    var path = _nav.PlanPath(snapshot.Player, _nav.CurrentMap.Exit.Pos);
+                    if (path.Count == 0)
+                    {
+                        BotLogger.Warn($"NavigateToExit: no path from {snapshot.Player} to exit {_nav.CurrentMap.Exit.Pos}; falling back to grid exploration");
+                        _navMovePending = false;
+                        _sm.TransitionTo(FarmState.ExploreGrid, "exit target unreachable by current minimap graph");
+                        return;
+                    }
+
                     NavigateOneGridStep(snapshot, _nav.CurrentMap.Exit.Pos, "NavigateToExit");
                     return;
                 }
