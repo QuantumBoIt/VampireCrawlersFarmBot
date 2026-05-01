@@ -59,7 +59,7 @@ Important options:
 - `General.PauseWhenUnfocused`: pause bot ticks when the game window is unfocused.
 - `General.LoopRuns`: continue farming after returning to town. Defaults to `true`.
 - `General.VerboseLogging`: enable detailed development logs and dump output. Defaults to `false`.
-- `General.LogLevel`: detailed log level used only when `VerboseLogging = true`.
+- `General.LogLevel`: detailed log level used only when `VerboseLogging = true`. Defaults to `Warn` for long-running farming.
 - `Hotkeys.Toggle`: default `F8`.
 - `Hotkeys.DumpScene`: default `F9`.
 - `Hotkeys.DumpMap`: default `F10`.
@@ -121,7 +121,7 @@ Expected startup line:
 [FarmBot] FarmBot loaded. Version: 0.1.0
 ```
 
-Normal farming keeps detailed run markers muted by default. With `VerboseLogging = false`, the log should stay mostly limited to startup, `F8` enable/disable, emergency stop, warnings, and errors.
+Normal farming keeps detailed run markers muted by default. With `VerboseLogging = false`, the log should stay mostly limited to startup, `F8` enable/disable, emergency stop, warnings, and errors. For long-running farming, keep `VerboseLogging = false` or use `VerboseLogging = true` with `LogLevel = Warn`.
 
 When `VerboseLogging = true`, useful run markers include:
 

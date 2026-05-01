@@ -60,8 +60,8 @@ namespace VampireCrawlersFarmBot
             PauseWhenUnfocused = cfg.Bind("General", "PauseWhenUnfocused", true, "Pause bot when the game window loses focus.");
             LoopRuns = cfg.Bind("General", "LoopRuns", true, "After a completed run returns to town, start the next run automatically.");
             VerboseLogging = cfg.Bind("General", "VerboseLogging", false, "Enable detailed FarmBot development logs. Set true before using F9/F10/F11 dumps.");
-            LogLevel = cfg.Bind("General", "LogLevel", "Debug", "Verbose log level when VerboseLogging is true: Debug, Info, Warn, Error.");
-
+            LogLevel = cfg.Bind("General", "LogLevel", "Warn", "Verbose log level when VerboseLogging is true: Debug, Info, Warn, Error.");
+            // LogLevel = cfg.Bind("General", "LogLevel", "Debug", "Verbose log level when VerboseLogging is true: Debug, Info, Warn, Error.");
             Toggle = cfg.Bind("Hotkeys", "Toggle", "F8", "Enable / pause the farm bot (new Input System Key name).");
             DumpScene = cfg.Bind("Hotkeys", "DumpScene", "F9", "Dump scene and UI objects to log.");
             DumpMap = cfg.Bind("Hotkeys", "DumpMap", "F10", "Dump map, player, chest, exit objects to log.");
