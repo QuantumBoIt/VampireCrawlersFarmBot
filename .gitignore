@@ -158,3 +158,6 @@ pnpm-debug.log*
 *.swp
 *.orig
 ~$*
+
+# Local agent memory
+memory.md

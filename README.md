@@ -278,3 +278,28 @@ Common clues:
 - `LocalScanChest: ... did not open chest`: the boundary probe is still searching.
 - `OpenPauseMenu timed out`: the pause button path or UI timing needs another dump.
 - `ConfirmExitToVillage timed out`: confirmation or result-screen paths changed.
+
+
+## TODO
+
+### Done
+
+- [x] Phase 1 infrastructure: BepInEx plugin metadata, logger/config wrappers, state machine, observers, hotkeys, and F9/F10/F11 dump tooling.
+- [x] Full farming loop: town -> world map -> configured world -> configured stage -> dungeon -> nuke -> rewards -> chests -> exit -> settlement -> town.
+- [x] Loop mode after returning to town with `General.LoopRuns`.
+- [x] Configurable world/stage selection through `Stage.WorldName` and `Stage.StageName`.
+- [x] World selection by cycling the right arrow; this is valid because all worlds loop.
+- [x] Dairy Plant sub-stage selection fix using real pointer delta before click, avoiding the bug where `onClick` played a sound but did not update the selected stage.
+- [x] Safe level-up selection that avoids gem cards, preventing gem-embed UI stalls.
+- [x] Multi-chest handling: detect known chest markers, navigate to each, probe boundaries, open chest, and choose cash-out.
+- [x] Exit handling: navigate to exit marker, probe boundary, enter next floor, then settle through the normal pause/exit/results flow.
+- [x] Minimap-based navigation with blocked-edge learning for hidden walls.
+- [x] Long-run watchdog: `Timing.RunWatchdogSeconds` aborts back to village if a dungeon run takes too long.
+- [x] Quiet long-run logging: `VerboseLogging = false` suppresses large `Info`/`Debug` output; `Warn`/`Error` remain visible.
+- [x] Local `memory.md` added for future agents and ignored by git.
+
+### Still Open
+
+- [ ] 引爆核弹逻辑优化（现在要三次）
+- [ ] 寻路算法优化
+- [ ] 界面切换优化， 现在有些地方的切换还不够高效
