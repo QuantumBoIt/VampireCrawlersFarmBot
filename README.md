@@ -6,7 +6,7 @@ Earlier development used separate helper mods as reference code. They are no lon
 
 ## Current Capabilities
 
-The FarmBot currently supports the configured Dairy Plant route. By default it selects the Dairy Plant world and the Curdling Factory stage.
+The FarmBot currently supports the configured Dairy Plant route. By default it selects the Dairy Plant world and the Curdling Factory stage. The world and stage names are configurable, and the Dairy Plant sub-stage picker is driven with staged keyboard navigation so it follows the game's highlighted row instead of relying on fragile mouse coordinates.
 
 1. Start from the town map.
 2. Open the world map.
@@ -38,9 +38,9 @@ The bot is designed around observed game UI objects and minimap data. It does no
 Default hotkeys are configured through BepInEx config entries:
 
 - `F8`: toggle the FarmBot on/off.
-- `F9`: dump scene and UI objects.
-- `F10`: dump map-related objects.
-- `F11`: log current state and dungeon debug snapshots.
+- `F9`: dump scene and UI objects. Requires `VerboseLogging = true` to print detailed output.
+- `F10`: dump map-related objects. Requires `VerboseLogging = true` to print detailed output.
+- `F11`: log current state and dungeon debug snapshots. Requires `VerboseLogging = true` for full snapshots.
 - `F12`: emergency stop.
 
 When enabled with `F8`, the bot starts from the current town state and proceeds through the full route. With `LoopRuns = true`, it starts another run after returning to town.
@@ -50,7 +50,7 @@ When enabled with `F8`, the bot starts from the current town state and proceeds 
 The generated config file is:
 
 ```text
-<GameRoot>/BepInEx/config/com.user.vampirecrawlers.farmbot.cfg
+<GameRoot>/BepInEx/config/com.your_user.vampirecrawlers.farmbot.cfg
 ```
 
 Important options:
@@ -58,6 +58,8 @@ Important options:
 - `General.EnabledOnStart`: start automatically when the plugin loads.
 - `General.PauseWhenUnfocused`: pause bot ticks when the game window is unfocused.
 - `General.LoopRuns`: continue farming after returning to town. Defaults to `true`.
+- `General.VerboseLogging`: enable detailed development logs and dump output. Defaults to `false`.
+- `General.LogLevel`: detailed log level used only when `VerboseLogging = true`.
 - `Hotkeys.Toggle`: default `F8`.
 - `Hotkeys.DumpScene`: default `F9`.
 - `Hotkeys.DumpMap`: default `F10`.
@@ -118,7 +120,9 @@ Expected startup line:
 [FarmBot] FarmBot loaded. Version: 0.1.0
 ```
 
-Useful run markers:
+Normal farming keeps detailed run markers muted by default. With `VerboseLogging = false`, the log should stay mostly limited to startup, `F8` enable/disable, emergency stop, warnings, and errors.
+
+When `VerboseLogging = true`, useful run markers include:
 
 ```text
 FarmBot enabled = True
@@ -146,9 +150,11 @@ FarmBot loop complete; starting next run.
 
 ### Menu Flow
 
-`GameObserver` locates known UI paths for the town, world map, Dairy Plant world, stage selection panel, and dungeon start button. `FarmBotRunner` drives those UI objects through a state machine and waits until the selected stage panel text matches `Stage.StageName` before starting the dungeon.
+`GameObserver` locates known UI paths for the town, world map, Dairy Plant world, stage selection panel, and dungeon start button. `FarmBotRunner` drives those UI objects through a state machine.
 
-## TODO
+World selection uses the observed world map panel and right-swipe button until the configured `Stage.WorldName` is visible. Inside the Dairy Plant sub-stage list, the bot identifies the target row from UI text, then sends staged keyboard `Down` presses followed by `Enter/Submit`. This mirrors the reliable manual flow where the bold highlighted row controls which sub-stage enters the dungeon.
+
+### Current Limitations
 
 - Generalize world/stage selection beyond the currently observed Dairy Plant UI paths. `Stage.StageName` can switch between known stages in the Dairy Plant world, but `Stage.WorldName` is still backed by the observed WorldMap -> DairyPlant path.
 
@@ -215,19 +221,21 @@ The bot handles these in order and then waits for town.
 
 ## Main Files
 
-- `Plugin.cs`: BepInEx entry point.
-- `BotLogger.cs`: FarmBot logging wrapper.
-- `BotConfig.cs`: BepInEx config entries.
-- `FarmStateMachine.cs`: state enum and transition logging.
-- `FarmBotRunner.cs`: main hotkey and bot state machine.
-- `GameObserver.cs`: scene and UI lookup.
-- `UiObserver.cs`: UI dump helpers.
-- `MapObserver.cs`: minimap and map dumps.
-- `Navigator.cs`: grid pathing, chest/exit tracking, blocked edge learning.
-- `BotInput.cs`: UI clicks, pointer events, and fallback key taps.
-- `RewardPolicy.cs`: reward choice policy.
-- `ChestPolicy.cs`: chest cash-out policy.
-- `RecoveryManager.cs`: recovery state handling.
+All bot source files live under `FarmBot/`.
+
+- `FarmBot/Plugin.cs`: BepInEx entry point.
+- `FarmBot/BotLogger.cs`: FarmBot logging wrapper with quiet and verbose modes.
+- `FarmBot/BotConfig.cs`: BepInEx config entries.
+- `FarmBot/FarmStateMachine.cs`: state enum and transition logging.
+- `FarmBot/FarmBotRunner.cs`: main hotkey and bot state machine.
+- `FarmBot/GameObserver.cs`: scene and UI lookup.
+- `FarmBot/UiObserver.cs`: UI dump helpers.
+- `FarmBot/MapObserver.cs`: minimap and map dumps.
+- `FarmBot/Navigator.cs`: grid pathing, chest/exit tracking, blocked edge learning.
+- `FarmBot/BotInput.cs`: UI clicks, pointer events, staged key taps, and movement input.
+- `FarmBot/RewardPolicy.cs`: reward choice policy.
+- `FarmBot/ChestPolicy.cs`: chest cash-out policy.
+- `FarmBot/RecoveryManager.cs`: recovery state handling.
 
 ## Safety Notes
 
@@ -238,6 +246,16 @@ The bot handles these in order and then waits for town.
 - The bot uses observed UI clicks and minimap navigation; it does not alter save files or currency values directly.
 
 ## Debugging
+
+Detailed logs are disabled by default to keep `BepInEx/LogOutput.log` readable during normal farming.
+
+To re-enable development logging, edit the generated BepInEx config and set:
+
+```ini
+[General]
+VerboseLogging = true
+LogLevel = Debug
+```
 
 Use `F9` for UI and scene dumps when a menu or result screen is not recognized.
 
