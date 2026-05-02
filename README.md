@@ -73,7 +73,7 @@ Important options:
 - `Timing.MoveWaitMs`: delay after movement actions.
 - `Timing.TurnWaitMs`: delay after turns.
 - `Timing.StateTimeoutSeconds`: recovery timeout.
-- `Timing.RunWatchdogSeconds`: maximum in-dungeon run time before aborting to village. Defaults to `180`; set `0` to disable.
+- `Timing.RunWatchdogSeconds`: maximum in-dungeon run time before aborting to village. Defaults to `90`; set `0` to disable. This is intentionally earlier than the `NavigateToExit` state timeout (`StateTimeoutSeconds * 7`, about 140s by default).
 - `Rewards.AvoidGem`: avoid gem upgrades.
 - `Rewards.SkipIfUncertain`: keep uncertain reward handling conservative.
 - `Chest.PreferCashOut`: choose chest cash-out.

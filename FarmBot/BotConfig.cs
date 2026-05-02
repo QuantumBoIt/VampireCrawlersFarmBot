@@ -81,7 +81,7 @@ namespace VampireCrawlersFarmBot
             MoveWaitMs = cfg.Bind("Timing", "MoveWaitMs", 300, "Milliseconds between movement steps.");
             TurnWaitMs = cfg.Bind("Timing", "TurnWaitMs", 200, "Milliseconds between turn steps.");
             StateTimeoutSeconds = cfg.Bind("Timing", "StateTimeoutSeconds", 20, "Seconds before a stuck state triggers Recovery.");
-            RunWatchdogSeconds = cfg.Bind("Timing", "RunWatchdogSeconds", 180, "Maximum seconds for one in-dungeon run before aborting to village. Set 0 to disable.");
+            RunWatchdogSeconds = cfg.Bind("Timing", "RunWatchdogSeconds", 90, "Maximum seconds for one in-dungeon run before aborting to village. Set 0 to disable.");
 
             MoveForward = cfg.Bind("Movement", "MoveForward", "W",       "Key to move the player forward one tile.");
             MoveBack    = cfg.Bind("Movement", "MoveBack",    "S",       "Key to move backward / used for 180° turns.");

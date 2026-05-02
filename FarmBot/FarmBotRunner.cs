@@ -252,7 +252,7 @@ namespace VampireCrawlersFarmBot
                 case FarmState.CashOutChest:          TickCashOutChest(timeout);                 break;
                 case FarmState.MarkChestDone:         TickMarkChestDone(timeout);                break;
 
-                case FarmState.NavigateToExit:        TickNavigateToExit(timeout * 5);           break;
+                case FarmState.NavigateToExit:        TickNavigateToExit(timeout * 7);           break;
                 case FarmState.LocalScanExit:         TickLocalScanExit(timeout);                break;
                 case FarmState.EnterExit:             TickEnterExit(timeout);                    break;
                 case FarmState.WaitNextFloorLoaded:   TickWaitNextFloorLoaded(timeout * 3);      break;
